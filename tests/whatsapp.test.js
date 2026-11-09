@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {parseApprovedEvent,resolveTestContact,rememberApprovedAlias,chatMatchesApproved,localAuthOptions,contactMatchesNumber,whatsappMessageId} = require('../src/whatsapp');
+const {parseApprovedEvent,parseAddCommand,isOwnerSelfMessage,handleOwnerCommand,resolveTestContact,rememberApprovedAlias,chatMatchesApproved,localAuthOptions,contactMatchesNumber,whatsappMessageId} = require('../src/whatsapp');
 const {DraftDelivery} = require('../src/drafts');
 const {quietLogger} = require('./helpers');
 const target='15551234567@c.us';
@@ -29,6 +29,34 @@ test('WhatsApp filter: manual outgoing is recognized; self-chat and groups are i
   assert.equal(parseApprovedEvent(out,'outgoing',aliases,30000,1000000,1000000).chatId,target);
   assert.equal(parseApprovedEvent({...out,to:owner},'outgoing',aliases,30000,1000000,1000000),null);
   assert.equal(parseApprovedEvent({...out,to:'xyz@g.us'},'outgoing',aliases,30000,1000000,1000000),null);
+});
+
+test('Owner self-chat /add enables drafting and is ignored from anyone else', async () => {
+  assert.equal(parseAddCommand('/add +573001234567'), '573001234567');
+  assert.equal(parseAddCommand('/add 573001234567'), '573001234567');
+  assert.equal(parseAddCommand('hola /add +573001234567'), null);
+  const command = {id:{_serialized:'cmd',fromMe:true,remote:owner},from:owner,to:owner,fromMe:true,type:'chat',body:'/add +15551234567'};
+  assert.equal(isOwnerSelfMessage(command, owner), true);
+  assert.equal(isOwnerSelfMessage({...command, from:target, to:owner}, owner), false);
+  assert.equal(isOwnerSelfMessage({...command, fromMe:false, id:{...command.id, fromMe:false}}, owner), false);
+  const sent = [];
+  const enabled = [];
+  const aliases = new Set([target]);
+  aliases.canonical = target;
+  const handled = await handleOwnerCommand(command, {
+    ownerId: owner,
+    resolve: async () => aliases,
+    enable: (row) => enabled.push(row),
+    reply: async (id, text) => sent.push({id, text})
+  });
+  assert.equal(handled, true);
+  assert.equal(enabled[0].chatId, target);
+  assert.equal(enabled[0].phone, '15551234567');
+  assert.equal(sent[0].text, 'Drafting enabled for +15551234567.');
+  assert.equal(await handleOwnerCommand({...command, from:target, to:target}, {
+    ownerId: owner, resolve: async () => aliases, enable() {}, reply: async () => sent.push('nope')
+  }), false);
+  assert.equal(sent.length, 1);
 });
 
 test('WhatsApp resolver: handles confirmed phone IDs and a mapped lid alias', async () => {

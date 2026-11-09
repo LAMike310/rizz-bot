@@ -409,6 +409,32 @@ async function rememberApprovedAlias(client, aliases, number, rawId, logger) {
   return false;
 }
 
+function parseAddCommand(body) {
+  const match = String(body || '').trim().match(/^\/add\s+\+?(\d{8,15})$/i);
+  return match ? match[1] : null;
+}
+
+function isOwnerSelfMessage(message, ownerId) {
+  if (!ownerId) return false;
+  if (!Boolean(message?.fromMe || message?.id?.fromMe)) return false;
+  const ids = [chatAddress(message?.from), chatAddress(message?.to), chatAddress(message?.id?.remote)].filter(Boolean);
+  return ids.length > 0 && ids.every((id) => id === ownerId);
+}
+
+async function handleOwnerCommand(message, {ownerId, resolve, enable, reply}) {
+  if (!isOwnerSelfMessage(message, ownerId)) return false;
+  const number = parseAddCommand(message?.body);
+  if (!number) return false;
+  try {
+    const resolved = await resolve(number);
+    enable({chatId: resolved.canonical, phone: number, aliases: resolved});
+    await reply(ownerId, `Drafting enabled for +${number}.`);
+  } catch (error) {
+    await reply(ownerId, `Could not enable drafting: ${error.message}`);
+  }
+  return true;
+}
+
 function skipReason(message, aliases, maxEventAgeMs = 30000, readyAtMs = 0, now = Date.now()) {
   if (!aliases) return 'allowlist-not-ready';
   if (message?.type && message.type !== 'chat') return `type:${message.type}`;
@@ -446,6 +472,7 @@ function createWhatsAppClient(config, log, handlers) {
 
   let readyAt = 0;
   let aliases = null;
+  let activeNumber = digits(config.number);
   let pollTimer = null;
   let lastPollLog = 0;
   let pollBusy = false;
@@ -471,6 +498,7 @@ function createWhatsAppClient(config, log, handlers) {
     resolveTestContact(client, config.number, log)
       .then(async (resolved) => {
         aliases = resolved;
+        activeNumber = digits(config.number);
         log.info(`WhatsApp ready; approved contact resolved to ${resolved.canonical} (${resolved.size} id aliases)`);
         try { await client.sendPresenceAvailable(); } catch { /* presence is best-effort */ }
         try { await rememberChatsFromStore(client, resolved, config.number, log); }
@@ -496,8 +524,8 @@ function createWhatsAppClient(config, log, handlers) {
     }
     for (const id of candidateChatIds(message)) {
       if (aliases.has(id)) continue;
-      if (await linkContactAlias(client, aliases, config.number, id)) continue;
-      await rememberApprovedAlias(client, aliases, config.number, id, log);
+      if (await linkContactAlias(client, aliases, activeNumber, id)) continue;
+      await rememberApprovedAlias(client, aliases, activeNumber, id, log);
     }
     const ageLimit = trustedChatId ? Math.max(config.maxEventAgeMs, 300000) : config.maxEventAgeMs;
     const parsed = parseApprovedEvent(message, 'incoming', aliases, ageLimit, readyAt, Date.now(), trustedChatId);
@@ -525,12 +553,12 @@ function createWhatsAppClient(config, log, handlers) {
     pollBusy = true;
     try {
       const chats = await loadOpenChats(client);
-      const matches = chats.filter((chat) => chatMatchesApproved(chat, aliases, config.number));
+      const matches = chats.filter((chat) => chatMatchesApproved(chat, aliases, activeNumber));
       for (const chat of matches) {
         const id = serializeWid(chat.id);
         if (id) aliases.add(id);
       }
-      const scanned = await scanApprovedMessages(client, config.number, aliases);
+      const scanned = await scanApprovedMessages(client, activeNumber, aliases);
       for (const id of scanned.aliases) aliases.add(id);
       let queued = 0;
       for (const message of scanned.messages) {
@@ -561,13 +589,30 @@ function createWhatsAppClient(config, log, handlers) {
     void handleIncoming(message);
   });
 
+  const ownerId = () => serializeWid(client.info?.wid);
+
+  const onOwnerCommand = (message) => handleOwnerCommand(message, {
+    ownerId: ownerId(),
+    resolve: (number) => resolveTestContact(client, number, log),
+    enable: ({chatId, phone, aliases: resolved}) => {
+      aliases = resolved;
+      activeNumber = phone;
+      missingChatLogged = false;
+      handlers.onContactEnabled?.({chatId, phone});
+      log.info(`Drafting enabled for +${phone} via owner self-chat`);
+    },
+    reply: (id, text) => client.sendMessage(id, text)
+  });
+
   client.on('message_create', (message) => {
     const fromMe = Boolean(message?.fromMe || message?.id?.fromMe);
-    if (!fromMe) {
-      void handleIncoming(message);
+    if (fromMe) {
+      void onOwnerCommand(message).then((handled) => {
+        if (!handled) handleOutgoing(message);
+      }).catch((error) => log.error(`Owner command failed: ${error.message}`));
       return;
     }
-    handleOutgoing(message);
+    void handleIncoming(message);
   });
 
   client.on('message_ciphertext', (message) => {
@@ -596,6 +641,9 @@ function createWhatsAppClient(config, log, handlers) {
 module.exports = {
   createWhatsAppClient,
   parseApprovedEvent,
+  parseAddCommand,
+  isOwnerSelfMessage,
+  handleOwnerCommand,
   resolveTestContact,
   rememberApprovedAlias,
   chatMatchesApproved,

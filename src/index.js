@@ -23,18 +23,27 @@ async function main() {
     logger: log
   });
   let agent = null;
+  let drafts = null;
   let closing = false;
   const client = createWhatsAppClient(config, log, {
     onReady: ({client, chatId}) => {
       agent?.stop();
       db.enableTestContact(chatId, config.number);
-      const drafts = new DraftDelivery({
+      drafts = new DraftDelivery({
         client, enabled: config.selfNotifications,
-        testChatId: chatId, logger: log
+        testChatId: chatId, label: `+${config.number}`, logger: log
       });
       agent = new DatingAgent({db, ai, drafts, config, logger: log});
       log.info(`Listener active. Debounce: ${config.debounceMs}ms. Model: ${config.model}.`);
       log.info('No automated messages can be sent to the test contact.');
+      log.info('Send /add +<number> in your WhatsApp self-chat to switch the drafted contact.');
+    },
+    onContactEnabled: ({chatId, phone}) => {
+      db.enableTestContact(chatId, phone);
+      if (drafts) {
+        drafts.testChatId = chatId;
+        drafts.label = `+${phone}`;
+      }
     },
     onIncoming: (message) => agent?.onIncoming(message),
     onOutgoing: (message) => agent?.onOutgoing(message),
