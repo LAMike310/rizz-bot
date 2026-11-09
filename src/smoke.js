@@ -17,14 +17,18 @@ async function run() {
   db.enableTestContact(chatId,'15551234567');
   const sent=[];
   const owner='573001234567@c.us';
-  const client={info:{wid:{_serialized:owner}},sendMessage:async(to,text)=>{sent.push({to,text});return {id:'mock-send'};}};
+  const client={info:{wid:{_serialized:owner}},sendMessage:async(to,text)=>{sent.push({to,text});return {id:{_serialized:'mock-send'}};}};
   let requestCount=0;
   const model=new OpenRouter({apiKey:'mock-key',model:'offline/mock',maxRetries:0,
     fetchImpl:async(url,opts)=>{
       requestCount++;
       assert.match(opts.body,/Qué haces/);
       return {ok:true,json:async()=>({model:'offline/mock',choices:[{message:{content:JSON.stringify({
-        should_reply:true,reply_es:'Todo bien, y tú?',translation_en:'All good, and you?',reason:'Responding to greeting.'
+        should_reply:true,options:[
+          {style:'natural',reply_es:'Todo bien, y tú?',translation_en:'All good, and you?'},
+          {style:'playful',reply_es:'Jaja qué haces de bueno?',translation_en:'Haha what are you up to?'},
+          {style:'direct',reply_es:'Todo bien. Qué planes tienes?',translation_en:'All good. What are your plans?'}
+        ]
       })}}],usage:{prompt_tokens:100,completion_tokens:40}})};
     }});
   const agent=new DatingAgent({db,ai:model,
@@ -42,7 +46,11 @@ async function run() {
     assert.equal(sent.length,1);
     assert.equal(sent[0].to,owner);
     assert.equal(db.countMessages(chatId),2);
-    assert.equal(db.draftsFor(chatId)[0].status,'notified');
+    assert.equal(db.draftsFor(chatId)[0].status,'active');
+    assert.equal(sent.length,1);
+    assert.match(sent[0].text,/\*1 · NATURAL\*/);
+    assert.match(sent[0].text,/\*3 · DIRECT\*/);
+    assert.match(sent[0].text,/Reply \*1 \/ 2 \/ 3\* to send/);
     console.log('\nPASS: 2-message burst -> SQLite -> mocked OpenRouter -> self-chat only');
   } finally {
     agent.stop();db.close();fs.rmSync(dir,{recursive:true,force:true});

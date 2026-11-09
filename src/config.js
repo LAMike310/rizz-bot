@@ -7,6 +7,13 @@ function bool(name, fallback) {
   if (!['true', 'false'].includes(raw.toLowerCase())) throw new Error(`${name} must be true or false`);
   return raw.toLowerCase() === 'true';
 }
+function language(name, fallback) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return fallback;
+  const value = raw.trim().toLowerCase();
+  if (value === 'auto' || /^[a-z]{2}$/.test(value)) return value;
+  throw new Error(`${name} must be auto or a two-letter language code`);
+}
 function integer(name, fallback, low, high) {
   const raw = process.env[name];
   if (raw == null || raw === '') return fallback;
@@ -22,7 +29,6 @@ function loadConfig(root = process.cwd()) {
   if (!apiKey) throw new Error('Set OPENROUTER_API_KEY in .env');
   const model = (process.env.OPENROUTER_MODEL || '').trim();
   if (!model) throw new Error('Set OPENROUTER_MODEL in .env');
-  if (!bool('DRAFT_ONLY', true)) throw new Error('V1 is hard-locked to DRAFT_ONLY=true.');
   const mode = process.env.OPENROUTER_OUTPUT_MODE || 'prompt';
   if (!['prompt', 'json_object', 'json_schema'].includes(mode)) throw new Error('Invalid OPENROUTER_OUTPUT_MODE');
   const temp = Number(process.env.AI_TEMPERATURE ?? 0.6);
@@ -31,11 +37,15 @@ function loadConfig(root = process.cwd()) {
     root, number, apiKey, model, outputMode: mode,
     temperature: temp,
     maxRetries: integer('OPENROUTER_MAX_RETRIES', 1, 0, 2),
-    maxOutputTokens: integer('AI_MAX_OUTPUT_TOKENS', 300, 80, 2048),
+    maxOutputTokens: integer('AI_MAX_OUTPUT_TOKENS', 2048, 80, 8192),
     apiTimeoutMs: integer('AI_TIMEOUT_MS', 30000, 1000, 120000),
-    debounceMs: integer('DEBOUNCE_MS', 5000, 100, 300000),
+    prod: bool('PROD', false),
+    debounceMs: bool('PROD', false) ? 45000 : 5000,
     maxHistory: integer('MAX_HISTORY_MESSAGES', 30, 2, 200),
     selfNotifications: bool('SELF_CHAT_NOTIFICATIONS', true),
+    draftOnly: bool('DRAFT_ONLY', true),
+    approvedSendEnabled: bool('APPROVED_SEND_ENABLED', false),
+    draftTtlMinutes: integer('DRAFT_TTL_MINUTES', 120, 1, 10080),
     maxEventAgeMs: integer('MAX_EVENT_AGE_MS', 30000, 0, 300000),
     clientId: process.env.WHATSAPP_CLIENT_ID || 'dating-agent',
     authPath: path.resolve(root, process.env.WHATSAPP_AUTH_PATH || '.wwebjs_auth'),
@@ -44,7 +54,16 @@ function loadConfig(root = process.cwd()) {
     profilePath: path.resolve(root, 'prompts/me.json'),
     chromeExecutable: process.env.CHROME_EXECUTABLE_PATH || undefined,
     headless: bool('WHATSAPP_HEADLESS', false),
-    logLevel: process.env.LOG_LEVEL || 'info'
+    logLevel: process.env.LOG_LEVEL || 'info',
+    voiceSanityTestEnabled: bool('VOICE_SANITY_TEST_ENABLED', false),
+    openrouterSttModel: (process.env.OPENROUTER_STT_MODEL || 'openai/whisper-large-v3-turbo').trim(),
+    voiceTestMaxSeconds: integer('VOICE_TEST_MAX_SECONDS', 30, 1, 300),
+    voiceTestMaxBytes: integer('VOICE_TEST_MAX_BYTES', 5000000, 1, 25000000),
+    voiceSttTimeoutMs: integer('VOICE_STT_TIMEOUT_MS', 30000, 1000, 120000),
+    incomingVoiceEnabled: bool('INCOMING_VOICE_ENABLED', false),
+    incomingVoiceLanguage: language('INCOMING_VOICE_LANGUAGE', 'es'),
+    incomingVoiceMaxSeconds: integer('INCOMING_VOICE_MAX_SECONDS', 120, 1, 600),
+    incomingVoiceMaxBytes: integer('INCOMING_VOICE_MAX_BYTES', 8000000, 1, 25000000)
   });
 }
 function logger(level = 'info') {

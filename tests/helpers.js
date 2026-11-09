@@ -37,5 +37,9 @@ function incoming(chatId, id, body, timestamp=1234567890) {
   return {chatId, whatsappId:id,body,timestamp};
 }
 function deferred() {let resolve, reject; const promise = new Promise((r,j)=>{resolve=r; reject=j;}); return {promise,resolve,reject};}
-const suggested = {should_reply:true, reply_es:'Todo bien. Y tú?',translation_en:'All good. And you?',reason:'A natural follow-up',model:'mock-model',usage:{prompt_tokens:10,completion_tokens:12}};
+const suggested = {should_reply:true, model:'mock-model', usage:{prompt_tokens:10,completion_tokens:12}, options:[
+  {style:'natural', reply_es:'Todo bien. Y tú?', translation_en:'All good. And you?'},
+  {style:'playful', reply_es:'Jaja todo bien. Qué haces?', translation_en:'Haha all good. What are you up to?'},
+  {style:'direct', reply_es:'Todo bien. Cuéntame de tu día.', translation_en:'All good. Tell me about your day.'}
+]};
 module.exports = {Clock,dbFixture,agentConfig,quietLogger,incoming,deferred,suggested};

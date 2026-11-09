@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const {Client, LocalAuth} = require('whatsapp-web.js');
+const {whatsappId, readSelfChatMessages} = require('./drafts');
 const qrcode = require('qrcode-terminal');
 
 function digits(value) {
@@ -70,6 +71,13 @@ function phoneMatchesDigits(candidate, number) {
   const value = digits(candidate);
   if (!number || value.length < 10) return false;
   return value === number || value.endsWith(number) || number.endsWith(value);
+}
+
+function savedContactName(contact) {
+  const raw = contact?.name || contact?.shortName || contact?.pushname || '';
+  const clean = String(raw).replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+  if (!clean || /^\+?[\d\s()-]{8,}$/.test(clean)) return '';
+  return clean;
 }
 
 function contactMatchesNumber(contact, number) {
@@ -154,12 +162,15 @@ async function resolveTestContact(client, rawNumber, logger = console) {
   }
   aliases.add(canonical);
   aliases.canonical = canonical;
+  aliases.displayName = '';
   if (typeof client.getContacts === 'function') {
     try {
       for (const contact of (await client.getContacts()) || []) {
         const id = serializeWid(contact?.id);
-        const contactNumber = digits(contact?.number || contact?.id?.user);
+        const contactNumber = digits(contact?.number || contact?.id?.user || contact?.phoneNumber?.user);
+        const matches = (contactNumber === number && id) || id === canonical || contactMatchesNumber(contact, number);
         if (contactNumber === number && id) aliases.add(id);
+        if (matches && !aliases.displayName) aliases.displayName = savedContactName(contact);
       }
     } catch (error) {
       logger.warn?.(`Contact book scan failed (${error.message}); continuing with the confirmed phone ID`);
@@ -414,11 +425,48 @@ function parseAddCommand(body) {
   return match ? match[1] : null;
 }
 
-function isOwnerSelfMessage(message, ownerId) {
+function approvalChoice(body) {
+  const match = String(body || '').trim().match(/^([123])$/);
+  return match ? Number(match[1]) : null;
+}
+
+async function quotedNotificationId(message) {
+  if (typeof message?.quotedMessageId === 'string' && message.quotedMessageId) return message.quotedMessageId;
+  const embedded = whatsappId(message?._data?.quotedMsg) || whatsappId({id: message?._data?.quotedStanzaID});
+  if (embedded) return embedded;
+  if (message?.hasQuotedMsg && typeof message.getQuotedMessage === 'function') {
+    try {
+      return whatsappId(await message.getQuotedMessage());
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+async function parseOwnerApproval(message, ownerId, testChatId = '') {
+  if (!isOwnerSelfMessage(message, ownerId, testChatId)) return null;
+  const option = approvalChoice(message?.body);
+  if (!option) return null;
+  const quotedWhatsappId = await quotedNotificationId(message);
+  if (!quotedWhatsappId) return null;
+  const approvalWhatsappId = message?.id?._serialized || (typeof message?.id === 'string' ? message.id : '');
+  if (!approvalWhatsappId) return null;
+  return {option, quotedWhatsappId, approvalWhatsappId};
+}
+
+function isOwnerSelfMessage(message, ownerId, testChatId = '') {
   if (!ownerId) return false;
   if (!Boolean(message?.fromMe || message?.id?.fromMe)) return false;
   const ids = [chatAddress(message?.from), chatAddress(message?.to), chatAddress(message?.id?.remote)].filter(Boolean);
-  return ids.length > 0 && ids.every((id) => id === ownerId);
+  if (!ids.length) return false;
+  if (ids.every((id) => id === ownerId)) return true;
+  const only = new Set(ids);
+  if (only.size !== 1) return false;
+  const chatId = ids[0];
+  if (chatId.endsWith('@g.us') || chatId.endsWith('@newsletter')) return false;
+  if (testChatId && chatId === testChatId) return false;
+  return chatId.endsWith('@c.us') || chatId.endsWith('@lid');
 }
 
 async function handleOwnerCommand(message, {ownerId, resolve, enable, reply}) {
@@ -427,12 +475,44 @@ async function handleOwnerCommand(message, {ownerId, resolve, enable, reply}) {
   if (!number) return false;
   try {
     const resolved = await resolve(number);
-    enable({chatId: resolved.canonical, phone: number, aliases: resolved});
-    await reply(ownerId, `Drafting enabled for +${number}.`);
+    enable({chatId: resolved.canonical, phone: number, displayName: resolved.displayName || '', aliases: resolved});
+    const who = resolved.displayName || `+${number}`;
+    await reply(ownerId, `Drafting enabled for ${who}.`);
   } catch (error) {
     await reply(ownerId, `Could not enable drafting: ${error.message}`);
   }
   return true;
+}
+
+function isIncomingAudio(message) {
+  const type = String(message?.type || message?._data?.type || '').toLowerCase();
+  return type === 'ptt' || type === 'audio' || Boolean(message?.isVoice || message?._data?.isPtt);
+}
+
+function parseApprovedAudio(message, aliases, maxEventAgeMs, readyAtMs, now, trustedChatId = '') {
+  if (!message || !aliases || !isIncomingAudio(message)) return null;
+  if (message.hasMedia === false) return null;
+  const tsMs = eventTimeMs(message, now);
+  if (tsMs < now - maxEventAgeMs) return null;
+  if (readyAtMs && tsMs < readyAtMs - maxEventAgeMs) return null;
+  const from = chatAddress(message.from);
+  const to = chatAddress(message.to);
+  const remote = chatAddress(message.id?.remote);
+  if ([from, to, remote].some((id) => id.endsWith('@g.us'))) return null;
+  if (from && to && from === to) return null;
+  if (Boolean(message.fromMe || message.id?.fromMe)) return null;
+  const rawChat = candidateChatIds(message).find((id) => aliases.has(id))
+    || (trustedChatId && aliases.has(trustedChatId) ? trustedChatId : '');
+  if (!rawChat) return null;
+  const whatsappId = whatsappMessageId(message);
+  if (!whatsappId) return null;
+  const duration = Number(message.duration ?? message._data?.duration);
+  return {
+    chatId: aliases.canonical || rawChat,
+    whatsappId,
+    timestamp: Number.isFinite(Number(message.timestamp)) ? Number(message.timestamp) : Math.floor(now / 1000),
+    seconds: Number.isFinite(duration) && duration >= 0 ? duration : null
+  };
 }
 
 function skipReason(message, aliases, maxEventAgeMs = 30000, readyAtMs = 0, now = Date.now()) {
@@ -475,6 +555,7 @@ function createWhatsAppClient(config, log, handlers) {
   let activeNumber = digits(config.number);
   let pollTimer = null;
   let lastPollLog = 0;
+  let lastSelfPollLog = 0;
   let pollBusy = false;
   let missingChatLogged = false;
   const seenMessageIds = new Set();
@@ -499,11 +580,12 @@ function createWhatsAppClient(config, log, handlers) {
       .then(async (resolved) => {
         aliases = resolved;
         activeNumber = digits(config.number);
-        log.info(`WhatsApp ready; approved contact resolved to ${resolved.canonical} (${resolved.size} id aliases)`);
+        const who = resolved.displayName ? `${resolved.displayName} (+${digits(config.number)})` : `+${digits(config.number)}`;
+        log.info(`WhatsApp ready; approved contact ${who} resolved to ${resolved.canonical} (${resolved.size} id aliases)`);
         try { await client.sendPresenceAvailable(); } catch { /* presence is best-effort */ }
         try { await rememberChatsFromStore(client, resolved, config.number, log); }
         catch (error) { log.warn(`Approved chat discovery failed (${error.message})`); }
-        handlers.onReady?.({client, chatId: resolved.canonical});
+        handlers.onReady?.({client, chatId: resolved.canonical, phone: digits(config.number), displayName: resolved.displayName || ''});
         if (pollTimer) clearInterval(pollTimer);
         pollTimer = setInterval(() => { void pollApprovedChat(); }, 5000);
         void pollApprovedChat();
@@ -528,6 +610,15 @@ function createWhatsAppClient(config, log, handlers) {
       await rememberApprovedAlias(client, aliases, activeNumber, id, log);
     }
     const ageLimit = trustedChatId ? Math.max(config.maxEventAgeMs, 300000) : config.maxEventAgeMs;
+    if (config.incomingVoiceEnabled && isIncomingAudio(message)) {
+      const audio = parseApprovedAudio(message, aliases, ageLimit, readyAt, Date.now(), trustedChatId);
+      if (audio) {
+        seenMessageIds.add(audio.whatsappId);
+        log.info('Approved incoming voice note queued');
+        await handlers.onIncomingAudio?.({...audio, message});
+        return true;
+      }
+    }
     const parsed = parseApprovedEvent(message, 'incoming', aliases, ageLimit, readyAt, Date.now(), trustedChatId);
     if (parsed) {
       seenMessageIds.add(parsed.whatsappId);
@@ -571,7 +662,8 @@ function createWhatsAppClient(config, log, handlers) {
         missingChatLogged = true;
         log.warn(`Approved phone has no loaded text yet (${scanned.scanned} messages in the WhatsApp store; newest ${scanned.newest}).`);
       }
-      if (queued || Date.now() - lastPollLog > 15000) {
+        await pollSelfApprovals();
+        if (queued || Date.now() - lastPollLog > 15000) {
         lastPollLog = Date.now();
         log.info(`Approved chat poll found ${scanned.messages.length} stored message(s) for the test phone; queued ${queued}`);
       }
@@ -591,15 +683,53 @@ function createWhatsAppClient(config, log, handlers) {
 
   const ownerId = () => serializeWid(client.info?.wid);
 
+  async function pollSelfApprovals() {
+    const owner = ownerId();
+    if (!owner || !client.pupPage) return;
+    let messages = [];
+    try {
+      messages = await readSelfChatMessages(client);
+      await handlers.onSelfMessages?.(messages);
+    } catch (error) {
+      if (Date.now() - lastSelfPollLog > 15000) {
+        lastSelfPollLog = Date.now();
+        log.warn(`Self-chat approval poll failed (${error.message})`);
+      }
+      return;
+    }
+    if (Date.now() - lastSelfPollLog > 15000) {
+      lastSelfPollLog = Date.now();
+      const choices = messages.filter((message) => /^[123]$/.test(String(message.body || '').trim())).length;
+      log.info(`Self-chat scan saw ${messages.length} message(s), ${choices} numbered repl${choices === 1 ? 'y' : 'ies'}`);
+    }
+    for (const message of messages) {
+      const seenId = whatsappId(message);
+      if (!seenId || seenMessageIds.has(`approval:${seenId}`)) continue;
+      const approval = await parseOwnerApproval(message, owner, aliases?.canonical || '');
+      if (!approval) {
+        const choice = approvalChoice(message.body);
+        seenMessageIds.add(`approval:${seenId}`);
+        if (!choice) continue;
+        log.info(`Self-chat ${choice} has no quote; applying it to the latest active draft`);
+        await handlers.onApproval?.({option: choice, quotedWhatsappId: '', approvalWhatsappId: seenId});
+        continue;
+      }
+      seenMessageIds.add(`approval:${seenId}`);
+      log.info(`Owner approval ${approval.option} for quoted message ${approval.quotedWhatsappId}`);
+      await handlers.onApproval?.(approval);
+    }
+  }
+
   const onOwnerCommand = (message) => handleOwnerCommand(message, {
     ownerId: ownerId(),
     resolve: (number) => resolveTestContact(client, number, log),
-    enable: ({chatId, phone, aliases: resolved}) => {
+    enable: ({chatId, phone, displayName = '', aliases: resolved}) => {
       aliases = resolved;
       activeNumber = phone;
       missingChatLogged = false;
-      handlers.onContactEnabled?.({chatId, phone});
-      log.info(`Drafting enabled for +${phone} via owner self-chat`);
+      handlers.onContactEnabled?.({chatId, phone, displayName});
+      const who = displayName || `+${phone}`;
+      log.info(`Drafting enabled for ${who} via owner self-chat`);
     },
     reply: (id, text) => client.sendMessage(id, text)
   });
@@ -607,9 +737,16 @@ function createWhatsAppClient(config, log, handlers) {
   client.on('message_create', (message) => {
     const fromMe = Boolean(message?.fromMe || message?.id?.fromMe);
     if (fromMe) {
-      void onOwnerCommand(message).then((handled) => {
-        if (!handled) handleOutgoing(message);
-      }).catch((error) => log.error(`Owner command failed: ${error.message}`));
+      void (async () => {
+        if (await onOwnerCommand(message)) return;
+        if (await handlers.onVoiceSanity?.({message, ownerId: ownerId(), client})) return;
+        const approval = await parseOwnerApproval(message, ownerId(), aliases?.canonical || '');
+        if (approval) {
+          await handlers.onApproval?.(approval);
+          return;
+        }
+        handleOutgoing(message);
+      })().catch((error) => log.error(`Owner command failed: ${error.message}`));
       return;
     }
     void handleIncoming(message);
@@ -641,8 +778,13 @@ function createWhatsAppClient(config, log, handlers) {
 module.exports = {
   createWhatsAppClient,
   parseApprovedEvent,
+  parseApprovedAudio,
+  isIncomingAudio,
   parseAddCommand,
+  parseOwnerApproval,
+  approvalChoice,
   isOwnerSelfMessage,
+  quotedNotificationId,
   handleOwnerCommand,
   resolveTestContact,
   rememberApprovedAlias,
@@ -650,5 +792,6 @@ module.exports = {
   localAuthOptions,
   chromeExecutablePath,
   contactMatchesNumber,
+  savedContactName,
   whatsappMessageId
 };

@@ -57,7 +57,12 @@ SELF_CHAT_NOTIFICATIONS=true
 DEBOUNCE_MS=45000
 WHATSAPP_AUTH_PATH=/absolute/path/to/existing/.wwebjs_auth
 WHATSAPP_CLIENT_ID=dating-agent
+VOICE_SANITY_TEST_ENABLED=false
 ```
+
+`VOICE_SANITY_TEST_ENABLED` stays `false` except during a live voice-transcription check. Optional: `OPENROUTER_STT_MODEL` (default `openai/whisper-large-v3-turbo`), `VOICE_TEST_MAX_SECONDS` (30), `VOICE_TEST_MAX_BYTES` (5000000), `VOICE_STT_TIMEOUT_MS` (30000). The check reuses `OPENROUTER_API_KEY`.
+
+Incoming voice notes from the approved contact stay off unless `INCOMING_VOICE_ENABLED=true`. `INCOMING_VOICE_LANGUAGE` defaults to `es` (`auto` omits the language hint). Limits: `INCOMING_VOICE_MAX_SECONDS` (120) and `INCOMING_VOICE_MAX_BYTES` (8000000). The same Whisper model and API key transcribe the audio. Audio is sent to OpenRouter and is not saved on disk. A failed transcript is marked in history and does not produce a draft for that burst.
 
 Use **digits only** for `TEST_CONTACT_NUMBER` (including the country code). Do **not** put the owner's primary WhatsApp number there. Give OpenRouter a small spend cap and choose a model available to your key. `openrouter/free` is a model router; outputs, availability and limits may change. Use `OPENROUTER_OUTPUT_MODE=prompt` by default for broad compatibility, or `json_schema` for a chosen model whose endpoint supports structured outputs. Invalid output fails closed.
 
@@ -66,7 +71,7 @@ No `.env`, `.wwebjs_auth`, or database file is included in this ZIP; `.gitignore
 ## 2. Verify code before using a phone
 
 ```bash
-npm test       # 23 offline automated tests (number may grow)
+npm test       # offline automated tests (58 at last count; the number may grow)
 npm run smoke  # full offline demonstration: SQLite + timed agent + mocked API + mock self-chat
 npm run check  # JavaScript syntax checks
 ```

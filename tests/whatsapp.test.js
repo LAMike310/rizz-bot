@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {parseApprovedEvent,parseAddCommand,isOwnerSelfMessage,handleOwnerCommand,resolveTestContact,rememberApprovedAlias,chatMatchesApproved,localAuthOptions,contactMatchesNumber,whatsappMessageId} = require('../src/whatsapp');
+const {parseApprovedEvent,parseAddCommand,isOwnerSelfMessage,handleOwnerCommand,resolveTestContact,rememberApprovedAlias,chatMatchesApproved,localAuthOptions,contactMatchesNumber,savedContactName,whatsappMessageId} = require('../src/whatsapp');
 const {DraftDelivery} = require('../src/drafts');
 const {quietLogger} = require('./helpers');
 const target='15551234567@c.us';
@@ -79,6 +79,16 @@ test('WhatsApp resolver: accepts a user/server wid and a saved contact when look
   const fromBook=await resolveTestContact(viaContact,'15551234567',quietLogger());
   assert.equal(fromBook.canonical,target);
   assert.equal(fromBook.has('999@lid'),true);
+  const named={info:{wid:{_serialized:owner}},
+    getNumberId:async()=>({_serialized:target}),
+    getContacts:async()=>[
+      {id:{_serialized:target}, number:'15551234567', name:'Valentina', pushname:'Vale'},
+      {id:{_serialized:'19998887777@c.us'}, number:'19998887777', name:'Someone Else'}
+    ]};
+  const withName=await resolveTestContact(named,'15551234567',quietLogger());
+  assert.equal(withName.displayName,'Valentina');
+  assert.equal(savedContactName({name:'+1 424 376 8718'}), '');
+  assert.equal(savedContactName({pushname:'Vale'}), 'Vale');
 });
 
 test('WhatsApp filter: messages loaded from the approved chat are accepted even when the sender id is a new lid', () => {
@@ -132,16 +142,30 @@ test('LocalAuth options reuse the configured parent auth path and client id', ()
 
 test('Draft Delivery: sends only to authenticated self-chat and refuses unsafe destinations', async () => {
   const sent=[];
-  const client={info:{wid:{_serialized:owner}},sendMessage:async(id,text)=>sent.push({id,text})};
+  const draft={id:1,options:[
+    {style:'natural',reply_es:'Hola',translation_en:'Hi'},
+    {style:'playful',reply_es:'Hola jaja',translation_en:'Hi haha'},
+    {style:'direct',reply_es:'Hola, cómo vas?',translation_en:'Hi, how are you?'}
+  ]};
+  const client={info:{wid:{_serialized:owner}},sendMessage:async(id,text)=>{sent.push({id,text});return {id:{_serialized:'note-9'}};}};
   const d=new DraftDelivery({client,testChatId:target,logger:quietLogger()});
-  const draft={id:1,reply_es:'Hola',translation_en:'Hi',reason:'test'};
-  assert.equal(await d.deliver(draft,{beforeSend:()=>true}),'notified');
+  assert.deepEqual(await d.deliver(draft,{beforeSend:()=>true}),{status:'notified',whatsappId:'note-9'});
   assert.equal(sent.length,1);
   assert.equal(sent[0].id,owner);
-  assert.match(sent[0].text,/DRAFT #1/);
-  assert.equal(await d.deliver(draft,{beforeSend:()=>false}),'stale');
+  assert.match(sent[0].text,/\*US TEST CONTACT\* · #1/);
+  assert.match(sent[0].text,/\*1 · NATURAL\*/);
+  assert.deepEqual(await d.deliver(draft,{beforeSend:()=>false}),{status:'stale',whatsappId:null});
   assert.equal(sent.length,1);
   const unsafe=new DraftDelivery({client:{...client,info:{wid:{_serialized:target}}},testChatId:target,logger:quietLogger()});
-  assert.equal(await unsafe.deliver(draft),'failed');
+  assert.deepEqual(await unsafe.deliver(draft),{status:'failed',whatsappId:null});
+  const partial=[];
+  const partialClient={
+    info:{wid:{_serialized:owner}},
+    sendMessage:async()=>({id:{fromMe:true,remote:owner,id:'ABC123'}}),
+    getChatById:async()=>({fetchMessages:async()=>[]})
+  };
+  const recovered=new DraftDelivery({client:partialClient,testChatId:target,logger:quietLogger()});
+  assert.equal((await recovered.deliver(draft,{beforeSend:()=>true})).whatsappId,`true_${owner}_ABC123`);
+  assert.equal(partial.length,0);
   assert.equal(sent.length,1);
 });

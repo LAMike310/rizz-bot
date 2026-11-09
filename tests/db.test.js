@@ -21,12 +21,17 @@ test('SQLite: drafts are version bound and invalidated on further messages', () 
   const f=dbFixture();
   try {
     f.db.saveEvent({...incoming(f.chat,'a','Hi'),direction:'incoming'});
-    const d=f.db.saveDraft({chatId:f.chat,revision:1,reply_es:'Hola',translation_en:'Hi',reason:'test',model:'x'});
+    const options=[
+      {style:'natural',reply_es:'Hola',translation_en:'Hi'},
+      {style:'playful',reply_es:'Hola jaja',translation_en:'Hi haha'},
+      {style:'direct',reply_es:'Hola, cómo vas?',translation_en:'Hi, how are you?'}
+    ];
+    const d=f.db.saveDraft({chatId:f.chat,revision:1,options,model:'x'});
     assert.ok(d?.id);
-    assert.equal(f.db.saveDraft({chatId:f.chat,revision:0,reply_es:'x',translation_en:'x',reason:'x'}),null);
+    assert.equal(f.db.saveDraft({chatId:f.chat,revision:0,options}),null);
     f.db.saveEvent({...incoming(f.chat,'b','What about Friday?'),direction:'incoming'});
     assert.equal(f.db.draft(d.id).status,'stale');
-    assert.equal(f.db.updateDraft(d.id,'notified'),false);
+    assert.equal(f.db.activateDraft(d.id,'note-1'),false);
   } finally {f.close();}
 });
 
@@ -44,8 +49,12 @@ test('SQLite: reopening preserves messages and drafts', () => {
 test('SQLite: enabling another contact disables the previous one', () => {
   const f=dbFixture();
   try {
-    f.db.enableTestContact('15557654321@c.us','15557654321');
+    f.db.enableTestContact('15557654321@c.us','15557654321','Valentina');
     assert.equal(f.db.isEnabled(f.chat),false);
     assert.equal(f.db.isEnabled('15557654321@c.us'),true);
+    assert.equal(f.db.contact('15557654321@c.us').display_name,'Valentina');
+    assert.equal(f.db.contact('15557654321@c.us').phone,'15557654321');
+    f.db.enableTestContact('15557654321@c.us','15557654321','');
+    assert.equal(f.db.contact('15557654321@c.us').display_name,'Valentina');
   } finally {f.close();}
 });
