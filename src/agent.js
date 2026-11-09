@@ -24,15 +24,18 @@ class DatingAgent {
   onOutgoing(message) { return this.onEvent(message, 'outgoing'); }
   onEvent(message, direction) {
     if (this.stopped || !this.db.isEnabled(message.chatId)) return false;
+    const hadPending = this.pending.has(message.chatId) || this.running.has(message.chatId) || this.due.has(message.chatId);
     const revision = this.db.saveEvent({ ...message, direction });
     if (revision == null) return false; // duplicate or unsupported event
     this.cancelTimer(message.chatId);
     this.due.delete(message.chatId);
     if (direction === 'incoming') {
       this.schedule(message.chatId, revision);
-      this.logger.debug(`Incoming message persisted; revision ${revision}; debounce started`);
-    } else {
+      this.logger.info(`Incoming message persisted; revision ${revision}; debounce started`);
+    } else if (hadPending) {
       this.logger.info(`Manual outgoing message; revision ${revision}; pending draft canceled`);
+    } else {
+      this.logger.info(`Outgoing message saved; revision ${revision}. Waiting for the test number to reply`);
     }
     return true;
   }

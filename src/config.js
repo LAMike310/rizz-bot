@@ -33,7 +33,7 @@ function loadConfig(root = process.cwd()) {
     maxRetries: integer('OPENROUTER_MAX_RETRIES', 1, 0, 2),
     maxOutputTokens: integer('AI_MAX_OUTPUT_TOKENS', 300, 80, 2048),
     apiTimeoutMs: integer('AI_TIMEOUT_MS', 30000, 1000, 120000),
-    debounceMs: integer('DEBOUNCE_MS', 45000, 100, 300000),
+    debounceMs: integer('DEBOUNCE_MS', 5000, 100, 300000),
     maxHistory: integer('MAX_HISTORY_MESSAGES', 30, 2, 200),
     selfNotifications: bool('SELF_CHAT_NOTIFICATIONS', true),
     maxEventAgeMs: integer('MAX_EVENT_AGE_MS', 30000, 0, 300000),
@@ -43,6 +43,7 @@ function loadConfig(root = process.cwd()) {
     promptPath: path.resolve(root, 'prompts/dating.md'),
     profilePath: path.resolve(root, 'prompts/me.json'),
     chromeExecutable: process.env.CHROME_EXECUTABLE_PATH || undefined,
+    headless: bool('WHATSAPP_HEADLESS', false),
     logLevel: process.env.LOG_LEVEL || 'info'
   });
 }

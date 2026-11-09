@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {parseApprovedEvent,resolveTestContact} = require('../src/whatsapp');
+const {parseApprovedEvent,resolveTestContact,rememberApprovedAlias,chatMatchesApproved,localAuthOptions,contactMatchesNumber,whatsappMessageId} = require('../src/whatsapp');
 const {DraftDelivery} = require('../src/drafts');
 const {quietLogger} = require('./helpers');
 const target='15551234567@c.us';
@@ -12,6 +12,9 @@ function msg(extra={}) {return {id:{_serialized:'abc',fromMe:false},from:target,
 test('WhatsApp filter: only approved private incoming text is processed', () => {
   const parse = (m,kind='incoming')=>parseApprovedEvent(m,kind,aliases,30000,1000000,1000000);
   assert.equal(parse(msg()).chatId,target);
+  assert.equal(parse(msg({from:{_serialized:target}})).chatId,target);
+  assert.equal(parse(msg({from:undefined,to:owner,id:{_serialized:'abc',remote:target,fromMe:false}})).chatId,target);
+  assert.equal(parse(msg({timestamp:undefined})).chatId,target);
   assert.equal(parse(msg({from:'999@c.us'})),null);
   assert.equal(parse(msg({from:'456@g.us'})),null);
   assert.equal(parse(msg({type:'image'})),null);
@@ -35,6 +38,68 @@ test('WhatsApp resolver: handles confirmed phone IDs and a mapped lid alias', as
   const result=await resolveTestContact(client,'+1 (555) 123-4567',quietLogger());
   assert.equal(result.canonical,target);
   assert.equal(result.has('123456789@lid'),true);
+});
+
+test('WhatsApp resolver: accepts a user/server wid and a saved contact when lookup returns a lid', async () => {
+  const bare={info:{wid:{user:'573001234567',server:'c.us'}},
+    getNumberId:async()=>({user:'15551234567',server:'c.us'})};
+  const fromParts=await resolveTestContact(bare,'15551234567',quietLogger());
+  assert.equal(fromParts.canonical,target);
+  const viaContact={info:{wid:{_serialized:owner}},
+    getNumberId:async()=>({user:'999',server:'lid',_serialized:'999@lid'}),
+    getContacts:async()=>[{id:{_serialized:target},number:'15551234567'}]};
+  const fromBook=await resolveTestContact(viaContact,'15551234567',quietLogger());
+  assert.equal(fromBook.canonical,target);
+  assert.equal(fromBook.has('999@lid'),true);
+});
+
+test('WhatsApp filter: messages loaded from the approved chat are accepted even when the sender id is a new lid', () => {
+  const mapped=new Set([target]); mapped.canonical=target;
+  const parsed=parseApprovedEvent(msg({from:'555@lid',to:owner}), 'incoming', mapped, 30000, 1000000, 1000000, target);
+  assert.equal(parsed.chatId, target);
+});
+
+test('WhatsApp filter: LID aliases persist as the canonical phone chat id', () => {
+  const mapped=new Set([target,'999@lid']); mapped.canonical=target;
+  const parsed=parseApprovedEvent(msg({from:'999@lid'}), 'incoming', mapped, 30000, 1000000, 1000000);
+  assert.equal(parsed.chatId, target);
+});
+
+test('WhatsApp resolver: live LID map is added only when the phone matches the approved contact', async () => {
+  const mapped=new Set([target]); mapped.canonical=target;
+  const client={getContactLidAndPhone:async()=>[{lid:'999@lid',pn:target}]};
+  assert.equal(await rememberApprovedAlias(client, mapped, '15551234567', '999@lid', quietLogger()), true);
+  assert.equal(mapped.has('999@lid'), true);
+  const other={getContactLidAndPhone:async()=>[{lid:'888@lid',pn:'19998887777@c.us'}]};
+  assert.equal(await rememberApprovedAlias(other, mapped, '15551234567', '888@lid', quietLogger()), false);
+  assert.equal(mapped.has('888@lid'), false);
+  const alternateLid={getContactLidAndPhone:async()=>[{lid:'777@lid',pn:target}]};
+  assert.equal(await rememberApprovedAlias(alternateLid, mapped, '15551234567', '555@lid', quietLogger()), true);
+  assert.equal(mapped.has('555@lid'), true);
+});
+
+test('Approved chat matching uses the phone user id without opening the chat', () => {
+  const mapped=new Set([target]); mapped.canonical=target;
+  assert.equal(chatMatchesApproved({id:{_serialized:'999@lid',user:'15551234567'}}, mapped, '15551234567'), true);
+  mapped.add('999@lid');
+  assert.equal(chatMatchesApproved({id:{_serialized:'999@lid',user:'999'}}, mapped, '15551234567'), true);
+  assert.equal(chatMatchesApproved({id:{_serialized:'19998887777@c.us',user:'19998887777'}}, mapped, '15551234567'), false);
+  assert.equal(chatMatchesApproved({id:{_serialized:'group@g.us',user:'group'}}, mapped, '15551234567'), false);
+});
+
+test('Contact phone match uses phoneNumber and ignores a hidden userid', () => {
+  assert.equal(contactMatchesNumber({userid:'999999999999999', phoneNumber:{user:'15551234567', server:'c.us'}}, '15551234567'), true);
+  assert.equal(contactMatchesNumber({userid:'15551234567', phoneNumber:{user:'19998887777', server:'c.us'}}, '15551234567'), false);
+  const parsed = parseApprovedEvent(msg({id:{id:'abc', remote:target, fromMe:false}}), 'incoming', aliases, 30000, 1000000, 1000000);
+  assert.equal(parsed.whatsappId, 'them_15551234567@c.us_abc');
+  assert.equal(whatsappMessageId({id:{id:'abc', remote:target, fromMe:false}}), 'them_15551234567@c.us_abc');
+});
+
+test('LocalAuth options reuse the configured parent auth path and client id', () => {
+  const options = localAuthOptions({clientId:'dating-agent', authPath:'/tmp/existing/.wwebjs_auth'});
+  assert.equal(options.clientId, 'dating-agent');
+  assert.equal(options.dataPath, '/tmp/existing/.wwebjs_auth');
+  assert.equal(options.dataPath.endsWith('session-dating-agent'), false);
 });
 
 test('Draft Delivery: sends only to authenticated self-chat and refuses unsafe destinations', async () => {
