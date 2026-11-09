@@ -7,4 +7,3 @@ A small project workspace for rizz-bot.
 Clone this repo and start building from here.
 
 Last updated: November 9, 2026.
-
