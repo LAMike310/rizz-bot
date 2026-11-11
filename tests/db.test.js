@@ -46,15 +46,16 @@ test('SQLite: reopening preserves messages and drafts', () => {
   } finally {require('node:fs').rmSync(f.dir,{recursive:true,force:true});}
 });
 
-test('SQLite: enabling another contact disables the previous one', () => {
+test('SQLite: enabling another contact keeps the previous one', () => {
   const f=dbFixture();
   try {
     f.db.enableTestContact('15557654321@c.us','15557654321','Valentina');
-    assert.equal(f.db.isEnabled(f.chat),false);
+    assert.equal(f.db.isEnabled(f.chat),true);
     assert.equal(f.db.isEnabled('15557654321@c.us'),true);
     assert.equal(f.db.contact('15557654321@c.us').display_name,'Valentina');
     assert.equal(f.db.contact('15557654321@c.us').phone,'15557654321');
     f.db.enableTestContact('15557654321@c.us','15557654321','');
     assert.equal(f.db.contact('15557654321@c.us').display_name,'Valentina');
+    assert.equal(f.db.aliasesFor(f.chat).includes(f.chat), true);
   } finally {f.close();}
 });

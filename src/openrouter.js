@@ -91,7 +91,7 @@ class OpenRouter {
       'When should_reply is true, options must be exactly three objects in order: natural, playful, direct.',
       'Each object has style, label, reply_es, and translation_en. Make the Spanish replies distinct.',
       'label is 2–4 words describing what that reply communicates. It is never sent to the match.',
-      'When should_reply is false, options must be an empty array.',
+      'When should_reply is false, options must be an empty array. Use that only if she said to stop, or there is nothing left to answer. A personal question or a boyfriend mention still gets three drafts.',
       'Drafts are for owner review. Never claim a date was booked or availability was checked.'
     ].join('\n\n');
   }
@@ -127,7 +127,9 @@ class OpenRouter {
       max_tokens: this.maxOutputTokens,
       temperature: this.temperature,
       stream: false,
-      reasoning: {enabled: false}
+      // Muse Ember (and other Muse models) reject reasoning.enabled=false with HTTP 400.
+      // "minimal" keeps the reasoning tax small so the JSON draft is not truncated.
+      reasoning: {effort: 'minimal'}
     };
     if (this.outputMode === 'json_object') body.response_format = {type: 'json_object'};
     if (this.outputMode === 'json_schema') body.response_format = {

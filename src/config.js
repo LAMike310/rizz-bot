@@ -46,6 +46,7 @@ function loadConfig(root = process.cwd()) {
     draftOnly: bool('DRAFT_ONLY', true),
     approvedSendEnabled: bool('APPROVED_SEND_ENABLED', false),
     draftTtlMinutes: integer('DRAFT_TTL_MINUTES', 120, 1, 10080),
+    maxEnabledContacts: integer('MAX_ENABLED_CONTACTS', 10, 1, 100),
     maxEventAgeMs: integer('MAX_EVENT_AGE_MS', 30000, 0, 300000),
     clientId: process.env.WHATSAPP_CLIENT_ID || 'dating-agent',
     authPath: path.resolve(root, process.env.WHATSAPP_AUTH_PATH || '.wwebjs_auth'),

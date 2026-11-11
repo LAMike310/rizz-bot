@@ -20,7 +20,9 @@ function openDriver(file, driver = 'auto') {
 class Store {
   constructor(file, {driver = 'auto'} = {}) {
     fs.mkdirSync(path.dirname(file), {recursive: true, mode: 0o700});
-    if (file !== ':memory:' && !fs.existsSync(file)) fs.closeSync(fs.openSync(file, 'wx', 0o600));
+    const existed = file !== ':memory:' && fs.existsSync(file);
+    if (file !== ':memory:' && !existed) fs.closeSync(fs.openSync(file, 'wx', 0o600));
+    this.existed = existed;
     const opened = openDriver(file, driver);
     this.db = opened.handle;
     this.kind = opened.kind;
@@ -33,6 +35,7 @@ class Store {
         enabled INTEGER NOT NULL DEFAULT 0,
         revision INTEGER NOT NULL DEFAULT 0,
         display_name TEXT NOT NULL DEFAULT '',
+        archived INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
       CREATE TABLE IF NOT EXISTS messages (
@@ -69,8 +72,11 @@ class Store {
       CREATE INDEX IF NOT EXISTS idx_drafts_chat_id ON drafts(chat_id,id);
     `);
     this.ensureContactName();
+    this.ensureArchivedColumn();
     this.ensureVoiceColumns();
+    this.ensureAliases(file, existed);
     this.settleInterruptedSends();
+    this.retireSyntheticNotifications();
   }
   migrate(file) {
     const columns = this.db.prepare('PRAGMA table_info(drafts)').all();
@@ -116,6 +122,27 @@ class Store {
       this.db.exec(`ALTER TABLE contacts ADD COLUMN display_name TEXT NOT NULL DEFAULT ''`);
     }
   }
+  ensureArchivedColumn() {
+    const columns = this.db.prepare('PRAGMA table_info(contacts)').all();
+    if (columns.length && !columns.some(column => column.name === 'archived')) {
+      this.db.exec(`ALTER TABLE contacts ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`);
+    }
+  }
+  ensureAliases(file, existed = false) {
+    const hasContacts = this.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='contacts'`).get();
+    const hasAliases = this.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='contact_aliases'`).get();
+    if (existed && hasContacts && !hasAliases && file && file !== ':memory:' && fs.existsSync(file)) {
+      const backup = `${file}.bak-v25`;
+      if (!fs.existsSync(backup)) fs.copyFileSync(file, backup);
+    }
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS contact_aliases (
+        alias TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL REFERENCES contacts(chat_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_contact_aliases_chat_id ON contact_aliases(chat_id);
+    `);
+  }
   ensureVoiceColumns() {
     const columns = this.db.prepare('PRAGMA table_info(messages)').all();
     if (!columns.length) return;
@@ -127,6 +154,15 @@ class Store {
   }
   settleInterruptedSends() {
     this.db.prepare(`UPDATE drafts SET status='uncertain' WHERE status='sending'`).run();
+  }
+  retireSyntheticNotifications() {
+    this.db.prepare(`UPDATE drafts SET status='failed'
+      WHERE status IN ('pending','active') AND notification_whatsapp_id LIKE 'local-draft-%'`).run();
+  }
+  approvableNotificationId(notificationWhatsappId) {
+    return typeof notificationWhatsappId === 'string'
+      && notificationWhatsappId.trim() !== ''
+      && !notificationWhatsappId.startsWith('local-draft-');
   }
   transaction(fn) {
     this.db.exec('BEGIN IMMEDIATE');
@@ -140,15 +176,127 @@ class Store {
     }
   }
   enableTestContact(chatId, phone, displayName = '') {
-    if (!chatId || !phone) throw new Error('Invalid test contact');
+    return this.enableContact(chatId, phone, displayName, [chatId]);
+  }
+  enableContact(chatId, phone, displayName = '', aliasList = [], {maxEnabled = 10} = {}) {
+    if (!chatId || !phone) throw new Error('Invalid contact');
+    const normalized = String(phone).replace(/\D/g, '');
+    if (!/^\d{8,15}$/.test(normalized)) throw new Error('Invalid contact number');
     const name = String(displayName || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    const aliases = [...new Set([chatId, ...aliasList].map((alias) => String(alias || '').trim()).filter(Boolean))];
     this.transaction(() => {
-      this.db.prepare('UPDATE contacts SET enabled=0 WHERE chat_id<>?').run(chatId);
-      this.db.prepare(`INSERT INTO contacts(chat_id, phone, enabled, display_name)
-        VALUES(?,?,1,?) ON CONFLICT(chat_id) DO UPDATE SET phone=excluded.phone,enabled=1,
+      const existing = this.contact(chatId);
+      const enabledCount = this.db.prepare('SELECT COUNT(*) AS n FROM contacts WHERE enabled=1').get().n;
+      if (!existing?.enabled && enabledCount >= maxEnabled) {
+        throw new Error(`At most ${maxEnabled} contacts can be enabled`);
+      }
+      const samePhone = this.db.prepare('SELECT chat_id FROM contacts WHERE phone=? AND chat_id<>?').all(normalized, chatId);
+      if (samePhone.length) throw new Error(`+${normalized} is already enrolled as another chat`);
+      for (const alias of aliases) {
+        const owner = this.db.prepare('SELECT chat_id FROM contact_aliases WHERE alias=?').get(alias);
+        if (owner && owner.chat_id !== chatId) {
+          const error = new Error(`WhatsApp id ${alias} already belongs to another contact`);
+          error.code = 'alias-collision';
+          throw error;
+        }
+      }
+      this.db.prepare(`INSERT INTO contacts(chat_id, phone, enabled, display_name, archived)
+        VALUES(?,?,1,?,0) ON CONFLICT(chat_id) DO UPDATE SET phone=excluded.phone, enabled=1, archived=0,
         display_name=CASE WHEN excluded.display_name<>'' THEN excluded.display_name ELSE contacts.display_name END`)
-        .run(chatId, phone, name);
+        .run(chatId, normalized, name);
+      const insertAlias = this.db.prepare('INSERT OR IGNORE INTO contact_aliases(alias, chat_id) VALUES(?,?)');
+      for (const alias of aliases) insertAlias.run(alias, chatId);
     });
+    return this.contact(chatId);
+  }
+  addAlias(chatId, alias) {
+    const id = String(alias || '').trim();
+    if (!chatId || !id) return false;
+    if (!this.contact(chatId)) throw new Error('Unknown contact');
+    const owner = this.db.prepare('SELECT chat_id FROM contact_aliases WHERE alias=?').get(id);
+    if (owner?.chat_id === chatId) return true;
+    if (owner) {
+      const error = new Error(`WhatsApp id ${id} already belongs to another contact`);
+      error.code = 'alias-collision';
+      throw error;
+    }
+    this.db.prepare('INSERT INTO contact_aliases(alias, chat_id) VALUES(?,?)').run(id, chatId);
+    return true;
+  }
+  aliasesFor(chatId) {
+    return this.db.prepare('SELECT alias FROM contact_aliases WHERE chat_id=? ORDER BY alias').all(chatId).map((row) => row.alias);
+  }
+  enabledContacts() {
+    return this.db.prepare(`SELECT * FROM contacts WHERE enabled=1 AND archived=0 ORDER BY created_at, phone`).all();
+  }
+  contactByPhone(phone) {
+    const normalized = String(phone || '').replace(/\D/g, '');
+    if (!normalized) return null;
+    const rows = this.db.prepare('SELECT * FROM contacts WHERE phone=?').all(normalized);
+    return rows.length === 1 ? rows[0] : null;
+  }
+  canSendTo(chatId) {
+    const contact = this.contact(chatId);
+    if (!contact || contact.enabled !== 1 || contact.archived) return false;
+    return this.aliasesFor(chatId).includes(chatId);
+  }
+  invalidateActiveDrafts(chatId) {
+    return this.db.prepare(`UPDATE drafts SET status='stale' WHERE chat_id=? AND status IN ('pending','active')`).run(chatId).changes;
+  }
+  sendingCount(chatId) {
+    return this.db.prepare(`SELECT COUNT(*) AS n FROM drafts WHERE chat_id=? AND status='sending'`).get(chatId).n;
+  }
+  pauseContact(phone) {
+    const contact = this.contactByPhone(phone);
+    if (!contact || contact.archived) return {ok: false, text: `No contact is enrolled for +${String(phone || '').replace(/\D/g, '')}.`};
+    const sending = this.sendingCount(contact.chat_id);
+    this.transaction(() => {
+      this.db.prepare('UPDATE contacts SET enabled=0 WHERE chat_id=?').run(contact.chat_id);
+      this.invalidateActiveDrafts(contact.chat_id);
+    });
+    const who = contact.display_name || `+${contact.phone}`;
+    const inflight = sending ? ' A send already in progress may still arrive.' : '';
+    return {ok: true, contact: this.contact(contact.chat_id), text: `Paused ${who}.${inflight}`};
+  }
+  resumeContact(phone) {
+    const contact = this.contactByPhone(phone);
+    const label = `+${String(phone || '').replace(/\D/g, '')}`;
+    if (!contact) return {ok: false, text: `No contact is enrolled for ${label}.`};
+    if (contact.archived) return {ok: false, text: `${label} is removed. Send /add ${label} to enroll them again.`};
+    this.db.prepare('UPDATE contacts SET enabled=1 WHERE chat_id=?').run(contact.chat_id);
+    const saved = this.contact(contact.chat_id);
+    return {
+      ok: true,
+      contact: saved,
+      aliases: this.aliasesFor(saved.chat_id),
+      text: `Resumed ${saved.display_name || `+${saved.phone}`}.`
+    };
+  }
+  removeContact(phone) {
+    const contact = this.contactByPhone(phone);
+    const label = `+${String(phone || '').replace(/\D/g, '')}`;
+    if (!contact) return {ok: false, text: `No contact is enrolled for ${label}.`};
+    const sending = this.sendingCount(contact.chat_id);
+    this.transaction(() => {
+      this.db.prepare('UPDATE contacts SET enabled=0, archived=1 WHERE chat_id=?').run(contact.chat_id);
+      this.invalidateActiveDrafts(contact.chat_id);
+    });
+    const who = contact.display_name || label;
+    const inflight = sending ? ' A send already in progress may still arrive.' : '';
+    return {ok: true, contact: this.contact(contact.chat_id), text: `Removed ${who}. History is kept and that chat will be ignored.${inflight}`};
+  }
+  formatContactList() {
+    const contacts = this.enabledContacts();
+    const lines = [`ACTIVE CONTACTS (${contacts.length})`, ''];
+    if (!contacts.length) {
+      lines.push('No contacts are enabled.');
+      return lines.join('\n');
+    }
+    for (const contact of contacts) {
+      const name = contact.display_name || `+${contact.phone}`;
+      lines.push(contact.display_name ? `• ${name} · +${contact.phone}` : `• ${name}`);
+    }
+    return lines.join('\n');
   }
   contact(chatId) {
     return this.db.prepare('SELECT * FROM contacts WHERE chat_id=?').get(chatId) || null;
@@ -241,26 +389,39 @@ class Store {
   }
   draft(id) { return this.db.prepare('SELECT * FROM drafts WHERE id=?').get(id) || null; }
   bindNotification(id, notificationWhatsappId) {
-    if (!notificationWhatsappId) return false;
+    if (!this.approvableNotificationId(notificationWhatsappId)) return false;
     return this.db.prepare(`UPDATE drafts SET status='active', notification_whatsapp_id=?, notified_at=CURRENT_TIMESTAMP
       WHERE id=? AND status IN ('pending','failed') AND notification_whatsapp_id IS NULL AND EXISTS (
         SELECT 1 FROM contacts c WHERE c.chat_id=drafts.chat_id
         AND c.enabled=1 AND c.revision=drafts.revision)`).run(notificationWhatsappId, id).changes === 1;
   }
-  latestActiveDraft() {
-    return this.db.prepare(`SELECT * FROM drafts WHERE status='active' ORDER BY id DESC LIMIT 1`).get() || null;
+  notificationIdCandidates(notificationWhatsappId) {
+    const id = String(notificationWhatsappId || '');
+    const twin = id.endsWith('_out') ? id.slice(0, -4) : `${id}_out`;
+    return twin === id ? [id] : [id, twin];
   }
   draftByNotification(notificationWhatsappId) {
-    if (!notificationWhatsappId) return null;
-    const exact = this.db.prepare('SELECT * FROM drafts WHERE notification_whatsapp_id=?').get(notificationWhatsappId);
-    if (exact) return exact;
-    const local = String(notificationWhatsappId).split('_').pop();
-    if (!local || local === notificationWhatsappId) {
-      const rows = this.db.prepare(`SELECT * FROM drafts WHERE notification_whatsapp_id IS NOT NULL ORDER BY id DESC LIMIT 50`).all();
-      return rows.find((row) => String(row.notification_whatsapp_id).endsWith(`_${local}`)) || null;
-    }
-    const rows = this.db.prepare(`SELECT * FROM drafts WHERE notification_whatsapp_id IS NOT NULL ORDER BY id DESC LIMIT 50`).all();
-    return rows.find((row) => row.notification_whatsapp_id === local || String(row.notification_whatsapp_id).endsWith(`_${local}`)) || null;
+    if (!this.approvableNotificationId(notificationWhatsappId)) return null;
+    const rows = this.notificationIdCandidates(notificationWhatsappId)
+      .map((id) => this.db.prepare('SELECT * FROM drafts WHERE notification_whatsapp_id=?').get(id))
+      .filter(Boolean);
+    return rows.length === 1 ? rows[0] : null;
+  }
+  stanzaKey(notificationWhatsappId) {
+    const parts = String(notificationWhatsappId || '').split('_').filter(Boolean);
+    if (!parts.length) return '';
+    const last = parts[parts.length - 1] === 'out' ? parts[parts.length - 2] : parts[parts.length - 1];
+    if (!last || last.includes('@')) return '';
+    return last;
+  }
+  draftByStanza(notificationWhatsappId) {
+    const stanza = this.stanzaKey(notificationWhatsappId);
+    if (!/^[A-F0-9]{16,}$/i.test(stanza)) return null;
+    const rows = this.db.prepare(
+      `SELECT * FROM drafts WHERE notification_whatsapp_id GLOB ? OR notification_whatsapp_id GLOB ?`
+    ).all(`*_${stanza}`, `*_${stanza}_out`);
+    const matches = rows.filter((row) => this.stanzaKey(row.notification_whatsapp_id) === stanza);
+    return matches.length === 1 ? matches[0] : null;
   }
   updateDraft(id, status) {
     if (!['failed','stale'].includes(status)) throw new Error('Invalid draft status');
@@ -268,7 +429,7 @@ class Store {
       .run(status, id, 'pending').changes === 1;
   }
   activateDraft(id, notificationWhatsappId, expiresAt) {
-    if (!notificationWhatsappId) return false;
+    if (!this.approvableNotificationId(notificationWhatsappId)) return false;
     return this.db.prepare(`UPDATE drafts SET status='active', notification_whatsapp_id=?, notified_at=CURRENT_TIMESTAMP, expires_at=COALESCE(?, expires_at)
       WHERE id=? AND status='pending' AND notification_whatsapp_id IS NULL AND EXISTS (
         SELECT 1 FROM contacts c WHERE c.chat_id=drafts.chat_id
@@ -278,11 +439,16 @@ class Store {
     return this.transaction(() => {
       const duplicate = this.db.prepare('SELECT * FROM drafts WHERE approval_whatsapp_id=?').get(approvalWhatsappId);
       if (duplicate) return {ok: false, code: 'duplicate-approval', draft: duplicate};
-      const draft = this.db.prepare('SELECT * FROM drafts WHERE notification_whatsapp_id=?').get(notificationWhatsappId);
+      if (!this.approvableNotificationId(notificationWhatsappId)) return {ok: false, code: 'unknown-notification'};
+      const draft = this.draftByNotification(notificationWhatsappId);
       if (!draft) return {ok: false, code: 'unknown-notification'};
       if (draft.status !== 'active') return {ok: false, code: draft.status, draft};
       const contact = this.contact(draft.chat_id);
-      if (!contact?.enabled || contact.revision !== draft.revision) {
+      if (!contact?.enabled || contact.archived) {
+        this.db.prepare(`UPDATE drafts SET status='stale' WHERE id=? AND status='active'`).run(draft.id);
+        return {ok: false, code: 'paused', draft: this.draft(draft.id)};
+      }
+      if (contact.revision !== draft.revision) {
         this.db.prepare(`UPDATE drafts SET status='stale' WHERE id=? AND status='active'`).run(draft.id);
         return {ok: false, code: 'stale', draft: this.draft(draft.id)};
       }
@@ -306,6 +472,9 @@ class Store {
   }
   markUncertain(id) {
     return this.db.prepare(`UPDATE drafts SET status='uncertain' WHERE id=? AND status='sending'`).run(id).changes === 1;
+  }
+  abortUnsent(id) {
+    return this.db.prepare(`UPDATE drafts SET status='stale' WHERE id=? AND status='sending'`).run(id).changes === 1;
   }
   countMessages(chatId) {
     return this.db.prepare('SELECT COUNT(*) AS n FROM messages WHERE chat_id=?').get(chatId).n;

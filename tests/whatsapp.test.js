@@ -91,10 +91,11 @@ test('WhatsApp resolver: accepts a user/server wid and a saved contact when look
   assert.equal(savedContactName({pushname:'Vale'}), 'Vale');
 });
 
-test('WhatsApp filter: messages loaded from the approved chat are accepted even when the sender id is a new lid', () => {
+test('WhatsApp filter: an unverified lid is not assigned to a contact', () => {
   const mapped=new Set([target]); mapped.canonical=target;
-  const parsed=parseApprovedEvent(msg({from:'555@lid',to:owner}), 'incoming', mapped, 30000, 1000000, 1000000, target);
-  assert.equal(parsed.chatId, target);
+  assert.equal(parseApprovedEvent(msg({from:'555@lid',to:owner}), 'incoming', mapped, 30000, 1000000, 1000000, target), null);
+  mapped.add('555@lid');
+  assert.equal(parseApprovedEvent(msg({from:'555@lid',to:owner}), 'incoming', mapped, 30000, 1000000, 1000000).chatId, target);
 });
 
 test('WhatsApp filter: LID aliases persist as the canonical phone chat id', () => {
@@ -128,6 +129,7 @@ test('Approved chat matching uses the phone user id without opening the chat', (
 test('Contact phone match uses phoneNumber and ignores a hidden userid', () => {
   assert.equal(contactMatchesNumber({userid:'999999999999999', phoneNumber:{user:'15551234567', server:'c.us'}}, '15551234567'), true);
   assert.equal(contactMatchesNumber({userid:'15551234567', phoneNumber:{user:'19998887777', server:'c.us'}}, '15551234567'), false);
+  assert.equal(contactMatchesNumber({phoneNumber:{user:'5551234567'}}, '15551234567'), false);
   const parsed = parseApprovedEvent(msg({id:{id:'abc', remote:target, fromMe:false}}), 'incoming', aliases, 30000, 1000000, 1000000);
   assert.equal(parsed.whatsappId, 'them_15551234567@c.us_abc');
   assert.equal(whatsappMessageId({id:{id:'abc', remote:target, fromMe:false}}), 'them_15551234567@c.us_abc');

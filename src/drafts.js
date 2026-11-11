@@ -85,12 +85,17 @@ async function readSelfChatMessages(client) {
     } catch { /* prefs module can be absent */ }
     try { remember(window.require('WAWebConnModel').Conn.wid); } catch { /* connection model unavailable */ }
     const rowFor = (msg, remote) => {
-      if (msg.type && msg.type !== 'chat') return null;
+      const type = String(msg.type || 'chat');
+      if (type !== 'chat' && type !== 'ptt' && type !== 'audio') return null;
       const quotedRemote = plainId(msg.quotedRemoteJid) || remote;
       const quotedId = plainId(msg.quotedMsg?.id) || (msg.quotedStanzaID ? `true_${quotedRemote}_${msg.quotedStanzaID}` : '');
       return {
         body: String(msg.body || '').slice(0, 2000),
         fromMe: true,
+        type,
+        isVoice: type === 'ptt' || Boolean(msg.isPtt),
+        duration: Number(msg.duration) || undefined,
+        hasQuotedMsg: Boolean(quotedId),
         timestamp: Number(msg.t) || 0,
         from: remote,
         to: remote,
@@ -203,23 +208,25 @@ function formatDraft(draft, label, recentIncoming = '', voiceTranscript = '') {
 }
 
 function formatConfirmation(draft, label) {
-  return `Draft #${draft.id} — Option ${draft.selected_option} sent to ${label}.`;
+  const name = String(label || 'contact').replace(/[*_~]/g, '').trim() || 'contact';
+  return `✓ Sent · ${name} · #${draft.id} · Option ${draft.selected_option}`;
 }
 
 function formatRejection(draft, code) {
   const id = draft?.id ? `Draft #${draft.id}` : 'That draft';
   if (code === 'stale') return `${id} is outdated.\n\nA newer message has arrived.\nPlease use the latest draft.`;
+  if (code === 'paused') return `${id} belongs to a paused contact.\n\nNothing was sent.`;
   if (code === 'expired') return `${id} has expired.\n\nNothing was sent.`;
   if (code === 'sent' || code === 'sending' || code === 'duplicate-approval') return `${id} was already used.\n\nNothing else was sent.`;
   if (code === 'uncertain') return `${id} has an unconfirmed send.\n\nNothing else was sent. Check the chat before retrying.`;
   return `${id} cannot be approved.\n\nNothing was sent.`;
 }
 
-// Self-chat notifications and the single approved-contact send live here.
-// The model never chooses a recipient.
+// Self-chat notifications and approved-contact sends live here.
+// The model never chooses a recipient. Each send uses the draft's chat_id.
 class DraftDelivery {
   constructor({client, enabled = true, testChatId, label = 'US Test Contact', logger = console,
-    draftOnly = true, approvedSendEnabled = false}) {
+    draftOnly = true, approvedSendEnabled = false, isApprovedRecipient = null}) {
     this.client = client;
     this.enabled = enabled;
     this.testChatId = testChatId;
@@ -227,17 +234,19 @@ class DraftDelivery {
     this.logger = logger;
     this.draftOnly = draftOnly;
     this.approvedSendEnabled = approvedSendEnabled;
+    this.isApprovedRecipient = isApprovedRecipient;
   }
   selfId() {
     const id = this.client.info?.wid?._serialized;
     if (!id || typeof id !== 'string' || !/^\d+@(c\.us|lid)$/.test(id)) {
       throw new Error('Verified owner WhatsApp ID is unavailable; refusing delivery');
     }
-    if (id === this.testChatId) throw new Error('Owner ID equals test contact; refusing delivery');
+    if (this.testChatId && id === this.testChatId) throw new Error('Owner ID equals test contact; refusing delivery');
+    if (this.isApprovedRecipient?.(id)) throw new Error('Owner ID equals an approved contact; refusing delivery');
     return id;
   }
-  async deliver(draft, {recentIncoming = '', voiceTranscript = '', beforeSend = () => true} = {}) {
-    const text = formatDraft(draft, this.label, recentIncoming, voiceTranscript);
+  async deliver(draft, {recentIncoming = '', voiceTranscript = '', beforeSend = () => true, label = ''} = {}) {
+    const text = formatDraft(draft, label || this.label, recentIncoming, voiceTranscript);
     if (!this.enabled) {
       this.logger.info(`\n--- LOCAL DRAFT ---\n${text}\n--- END DRAFT ---`);
       return {status: 'local', whatsappId: null};
@@ -257,9 +266,10 @@ class DraftDelivery {
     }
     try {
       if (!id) id = await idFromRecentSelfChat(this.client, ownerId, text);
-      if (!id) {
-        id = `local-draft-${draft.id}`;
-        this.logger.warn(`WhatsApp stored draft #${draft.id} without a readable id; tracking it locally`);
+      if (!id || String(id).startsWith('local-draft-')) {
+        this.logger.error(`Draft #${draft.id} has no WhatsApp notification id and cannot be approved`);
+        this.logger.info(`\n--- LOCAL FALLBACK DRAFT ---\n${text}\n--- END DRAFT ---`);
+        return {status: 'failed', whatsappId: null};
       }
       return {status: 'notified', whatsappId: id};
     } catch (error) {
@@ -273,10 +283,13 @@ class DraftDelivery {
   }
   async sendApproved({chatId, text}) {
     if (!this.canSendToContact()) return {ok: false, reason: 'send-disabled'};
-    if (!chatId || chatId !== this.testChatId) return {ok: false, reason: 'not-allowlisted'};
+    if (!chatId) return {ok: false, reason: 'missing-recipient'};
     if (typeof text !== 'string' || !text.trim()) return {ok: false, reason: 'empty-text'};
-    const ownerId = this.selfId();
+    let ownerId;
+    try { ownerId = this.selfId(); }
+    catch (error) { return {ok: false, reason: 'owner-unavailable'}; }
     if (chatId === ownerId) return {ok: false, reason: 'owner-recipient'};
+    if (this.isApprovedRecipient && !this.isApprovedRecipient(chatId)) return {ok: false, reason: 'not-allowlisted'};
     const id = await sendPlainText(this.client, chatId, text);
     if (!id) {
       const error = new Error('Approved send returned no WhatsApp id');

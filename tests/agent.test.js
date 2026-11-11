@@ -27,6 +27,24 @@ test('Agent: two invalid JSON attempts tell the owner to handle this round', asy
     assert.equal(x.db.draftsFor(x.chat).length, 0);
   } finally { x.agent.stop(); x.close(); }
 });
+test('Agent: invalid JSON for a paused contact does not notify the owner', async () => {
+  const notices = [];
+  const gate = deferred();
+  const error = new Error('AI output is not valid JSON');
+  error.invalidOutput = true;
+  const x = setup({aiGenerate: async () => { await gate.promise; throw error; }});
+  x.agent.drafts.notifyOwner = async (text) => { notices.push(text); };
+  try {
+    x.agent.onIncoming(incoming(x.chat, 'a', 'Hola'));
+    x.clock.tick(45000);
+    x.db.pauseContact('15551234567');
+    x.agent.pauseChat(x.chat);
+    gate.resolve();
+    await x.agent.drain();
+    assert.deepEqual(notices, []);
+    assert.equal(x.db.draftsFor(x.chat).length, 0);
+  } finally { x.agent.stop(); x.close(); }
+});
 test('Agent: one incoming message produces one persisted and notified draft at 45 seconds',async()=>{
   const x=setup(); try {
     assert.equal(x.agent.onIncoming(incoming(x.chat,'a','Hola')),true);

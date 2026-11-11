@@ -31,35 +31,49 @@ async function main() {
   let closing = false;
   const voiceSanity = createVoiceSanity({db, config, log, ai, getDrafts: () => drafts});
   const client = createWhatsAppClient(config, log, {
-    onReady: ({client, chatId, displayName = ''}) => {
+    onLoadContacts: () => db.enabledContacts().map((row) => ({
+      chatId: row.chat_id,
+      phone: row.phone,
+      displayName: row.display_name || '',
+      aliases: db.aliasesFor(row.chat_id)
+    })),
+    onContactEnabled: ({chatId, phone, displayName = '', aliases = []}) => {
+      db.enableContact(chatId, phone, displayName, aliases, {maxEnabled: config.maxEnabledContacts});
+    },
+    onAliasLinked: ({chatId, alias}) => db.addAlias(chatId, alias),
+    onPause: (phone) => {
+      const result = db.pauseContact(phone);
+      if (result.ok) agent?.pauseChat(result.contact.chat_id);
+      return result;
+    },
+    onResume: (phone) => db.resumeContact(phone),
+    onRemove: (phone) => {
+      const result = db.removeContact(phone);
+      if (result.ok) agent?.pauseChat(result.contact.chat_id);
+      return result;
+    },
+    onList: () => db.formatContactList(),
+    onReady: ({client}) => {
       agent?.stop();
-      db.enableTestContact(chatId, config.number, displayName);
-      const label = db.contact(chatId)?.display_name || displayName || `+${config.number}`;
       drafts = new DraftDelivery({
-        client, enabled: config.selfNotifications,
-        testChatId: chatId, label, logger: log,
-        draftOnly: config.draftOnly, approvedSendEnabled: config.approvedSendEnabled
+        client, enabled: config.selfNotifications, logger: log,
+        draftOnly: config.draftOnly, approvedSendEnabled: config.approvedSendEnabled,
+        isApprovedRecipient: (chatId) => db.canSendTo(chatId)
       });
       agent = new DatingAgent({db, ai, drafts, config, logger: log, voiceBaselineId});
-      log.info(`Listener active. Debounce: ${config.debounceMs}ms. Model: ${config.model}.`);
+      const enabled = db.enabledContacts().length;
+      log.info(`Listener active. Debounce: ${config.debounceMs}ms. Model: ${config.model}. Enabled contacts: ${enabled}.`);
       if (config.draftOnly || !config.approvedSendEnabled) {
         log.info('Approved contact sending is off. Drafts stay in Message Yourself until DRAFT_ONLY=false and APPROVED_SEND_ENABLED=true.');
       } else {
-        log.info('Human-approved sending is enabled for the allowlisted contact only.');
+        log.info('Human-approved sending is on. A quoted 1, 2, or 3 sends only to that draft\'s contact.');
       }
-      log.info('Send /add +<number> in your WhatsApp self-chat to switch the drafted contact.');
+      log.info('In Message Yourself: /add +<number> enrolls a contact. /list, /pause, /resume, and /remove manage them.');
       if (config.incomingVoiceEnabled) {
-        log.info(`Incoming voice transcription is on (${config.incomingVoiceLanguage}, ${config.openrouterSttModel}). Audio from the approved contact is sent to OpenRouter for transcription and is not stored.`);
+        log.info(`Incoming voice transcription is on (${config.incomingVoiceLanguage}, ${config.openrouterSttModel}). Audio from approved contacts is sent to OpenRouter for transcription and is not stored.`);
       }
       if (abandonedVoice) {
         drafts.notifyOwner('A voice note was still processing when the app restarted. It was not used for a draft. Review that chat manually.').catch(() => {});
-      }
-    },
-    onContactEnabled: ({chatId, phone, displayName = ''}) => {
-      db.enableTestContact(chatId, phone, displayName);
-      if (drafts) {
-        drafts.testChatId = chatId;
-        drafts.label = db.contact(chatId)?.display_name || displayName || `+${phone}`;
       }
     },
     onIncoming: (message) => agent?.onIncoming(message),
@@ -68,7 +82,7 @@ async function main() {
       getMedia: () => downloadVoiceMedia(client, message)
     }),
     onOutgoing: (message) => agent?.onOutgoing(message),
-    onApproval: (command) => agent?.handleApproval({...command, label: drafts?.label}),
+    onApproval: (command) => agent?.handleApproval(command),
     onSelfMessages: (messages) => agent?.observeSelfChat(messages),
     onVoiceSanity: (event) => voiceSanity.handle(event),
     onDisconnected: () => {agent?.stop(); agent = null;}

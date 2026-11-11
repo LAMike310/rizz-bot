@@ -4,8 +4,7 @@ const {formatConfirmation, formatRejection, draftIdFromNotification} = require('
 const {transcribeAudio} = require('./transcribe');
 const {audioFormat} = require('./voice-sanity');
 
-// Deliberately only one contact in V1; still keyed by chat ID to keep the
-// debounce and revision invariants explicit and testable.
+// Runtime state is keyed by chat_id so concurrent contacts do not share a timer.
 class DatingAgent {
   constructor({db, ai, drafts, config, logger = console,
     setTimer = setTimeout, clearTimer = clearTimeout, now = Date.now, transcribe = transcribeAudio, voiceBaselineId = 0}) {
@@ -184,7 +183,7 @@ class DatingAgent {
     if (this.stopped || !this.isCurrent(chatId, revision)) return;
     if (this.running.has(chatId)) { this.due.set(chatId, revision); return; }
     const task = this.generate(chatId, revision)
-      .catch(error => this.logger.error(`Draft generation failed (${error.message})`))
+      .catch(error => this.logger.error(`Draft generation failed for ${chatId} (${error.message})`))
       .finally(() => {
         this.running.delete(chatId);
         const due = this.due.get(chatId);
@@ -207,12 +206,13 @@ class DatingAgent {
       response = await this.ai.generate({history, prompt, profile});
     } catch (error) {
       if (!error.invalidOutput) throw error;
-      this.logger.error(`Draft JSON failed twice (${error.message})`);
+      this.logger.error(`Draft JSON failed for ${chatId} (${error.message})`);
+      if (!this.isCurrent(chatId, revision)) return;
       await this.drafts.notifyOwner("Sorry, you're on your own this round.");
       return;
     }
     if (!this.isCurrent(chatId, revision)) {
-      this.logger.info(`Discarded stale response for revision ${revision}`);
+      this.logger.info(`Discarded ${this.db.isEnabled(chatId) ? 'stale' : 'paused'} response for revision ${revision}`);
       return;
     }
     if (!response.should_reply) {
@@ -230,6 +230,7 @@ class DatingAgent {
     const lastIncoming = [...history].reverse().find(m => m.direction === 'incoming')?.body || '';
     const voiceTranscript = history.filter(m => m.source_type === 'voice' && m.transcription_status === 'complete').map(m => m.body).join('\n');
     const delivery = await this.drafts.deliver({...draft, options: response.options}, {
+      label: this.contactName(chatId),
       recentIncoming: lastIncoming,
       voiceTranscript,
       beforeSend: () => this.isCurrent(chatId, revision)
@@ -256,21 +257,30 @@ class DatingAgent {
       }
     }
   }
-  async handleApproval({approvalWhatsappId, quotedWhatsappId, option, label}) {
+  contactName(chatId) {
+    const row = this.db.contact?.(chatId);
+    if (row?.display_name) return row.display_name;
+    if (row?.phone) return `+${row.phone}`;
+    return 'contact';
+  }
+  pauseChat(chatId) {
+    this.cancelTimer(chatId);
+    this.due.delete(chatId);
+    this.waitingTranscript.delete(chatId);
+  }
+  async handleApproval({approvalWhatsappId, quotedWhatsappId, option}) {
     if (!approvalWhatsappId || ![1, 2, 3].includes(option)) {
       return {ok: false, code: 'invalid'};
     }
-    let quoted = quotedWhatsappId;
-    if (!quoted) {
-      const latest = this.db.latestActiveDraft();
-      if (!latest?.notification_whatsapp_id) return {ok: false, code: 'no-active-draft'};
-      quoted = latest.notification_whatsapp_id;
-      this.logger.info(`Unquoted ${option} applied to latest draft #${latest.id}`);
+    if (!quotedWhatsappId) {
+      this.logger.info(`Unquoted ${option} was ignored`);
+      await this.drafts.notifyOwner('Reply 1, 2, or 3 on the draft itself. Nothing was sent.');
+      return {ok: false, code: 'unquoted'};
     }
     const now = new Date(this.now()).toISOString();
     const sendingEnabled = this.drafts.canSendToContact();
     const claimed = this.db.claimApproval({
-      notificationWhatsappId: quoted,
+      notificationWhatsappId: quotedWhatsappId,
       approvalWhatsappId,
       option,
       now,
@@ -283,23 +293,31 @@ class DatingAgent {
       }
       return claimed;
     }
-    if (!sendingEnabled || !this.db.isEnabled(claimed.chatId)) {
+    if (!sendingEnabled) {
       this.logger.info(`Approval matched draft #${claimed.draft.id} option ${option}; sending is disabled`);
       await this.drafts.notifyOwner(`Draft #${claimed.draft.id} — option ${option} recognized. Sending is disabled. Nothing was sent.`);
       return {ok: false, code: 'send-disabled', draft: claimed.draft};
     }
+    if (!this.db.isEnabled(claimed.chatId)) {
+      this.db.abortUnsent(claimed.draft.id);
+      this.logger.info(`Approval matched draft #${claimed.draft.id}; contact is paused`);
+      await this.drafts.notifyOwner(formatRejection(claimed.draft, 'paused'));
+      return {ok: false, code: 'paused', draft: this.db.draft(claimed.draft.id)};
+    }
     try {
       const sent = await this.drafts.sendApproved({chatId: claimed.chatId, text: claimed.text});
       if (!sent.ok) {
-        this.db.markUncertain(claimed.draft.id);
+        const refused = sent.reason === 'not-allowlisted' || sent.reason === 'missing-recipient' || sent.reason === 'owner-recipient';
+        if (refused) this.db.abortUnsent(claimed.draft.id);
+        else this.db.markUncertain(claimed.draft.id);
         this.logger.error(`Approved send refused (${sent.reason})`);
-        await this.drafts.notifyOwner(formatRejection(claimed.draft, 'uncertain'));
+        await this.drafts.notifyOwner(formatRejection(claimed.draft, refused ? 'paused' : 'uncertain'));
         return {ok: false, code: sent.reason, draft: this.db.draft(claimed.draft.id)};
       }
       this.db.markSent(claimed.draft.id, sent.whatsappId, now);
       const saved = this.db.draft(claimed.draft.id);
-      await this.drafts.notifyOwner(formatConfirmation(saved, label || this.drafts.label));
-      this.logger.info(`Draft #${saved.id} option ${option} sent`);
+      await this.drafts.notifyOwner(formatConfirmation(saved, this.contactName(saved.chat_id)));
+      this.logger.info(`Draft #${saved.id} option ${option} sent to ${saved.chat_id}`);
       return {ok: true, code: 'sent', draft: saved};
     } catch (error) {
       this.db.markUncertain(claimed.draft.id);

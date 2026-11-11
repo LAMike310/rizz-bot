@@ -32,11 +32,9 @@ async function main() {
   await done;
   const report = await client.pupPage.evaluate(async (number) => {
     const onlyDigits = (value) => String(value || '').replace(/\D/g, '');
-    const tail = number.slice(-10);
     const same = (value) => {
       const digits = onlyDigits(value);
-      if (digits.length < 10) return false;
-      return digits === number || digits.endsWith(number) || number.endsWith(digits);
+      return digits === number;
     };
     const serialized = (value) => value?._serialized || (value?.user && value?.server ? `${value.user}@${value.server}` : '');
     const collections = window.require('WAWebCollections');
