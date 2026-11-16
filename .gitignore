@@ -1,8 +1,13 @@
 .DS_Store
 node_modules/
+.next/
 .wwebjs_auth/
 .wwebjs_cache/
 .cache/
 .env
+.env.local
 data/*.db
+data/*.db-*
+data/*.db.bak*
 *.db
+*.zip
