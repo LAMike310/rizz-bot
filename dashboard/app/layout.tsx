@@ -1,4 +1,5 @@
 import type {ReactNode} from 'react';
+import type {Metadata, Viewport} from 'next';
 import {Fraunces, Outfit} from 'next/font/google';
 import {AppFrame} from '../components/app-frame';
 import './globals.css';
@@ -19,10 +20,28 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 export const runtime = 'nodejs';
 
-export const metadata = {
+export const metadata: Metadata = {
   title: 'Agent Inbox',
   description: 'Local read-only view of WhatsApp dating-agent conversations.',
-  robots: {index: false, follow: false}
+  applicationName: 'RizzBot',
+  robots: {index: false, follow: false},
+  manifest: '/manifest.webmanifest',
+  appleWebApp: {
+    capable: true,
+    title: 'RizzBot',
+    statusBarStyle: 'black-translucent'
+  },
+  icons: {
+    icon: '/icon.png',
+    apple: '/apple-touch-icon.png'
+  }
+};
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
+  themeColor: '#050909'
 };
 
 export default function RootLayout({children}: {children: ReactNode}) {

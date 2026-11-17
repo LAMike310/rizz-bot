@@ -31,9 +31,9 @@ export function InboxShell({
   return (
     <div className="workspace">
       <nav className="rail" aria-label="Inbox">
-        <span className="rail-item" aria-current="page">
+        <span className="rail-item" aria-current="page" title="Conversations">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4z" fill="none" stroke="currentColor" strokeWidth="1.8"/><path d="M4 7l8 6 8-6" fill="none" stroke="currentColor" strokeWidth="1.8"/></svg>
-          <span>Conversations</span>
+          <span className="visually-hidden">Conversations</span>
           <span className="rail-count"><span className="visually-hidden">Conversation count </span>{total}</span>
         </span>
       </nav>
@@ -53,7 +53,7 @@ export function InboxShell({
         {thread ? (
           <>
             <div className="thread-head">
-              <p className="back"><Link href={inboxHref(contactLimit)}>Back</Link></p>
+              <p className="back"><Link href={inboxHref(contactLimit)} aria-label="Conversations"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 6l-6 6 6 6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg><span className="visually-hidden">Conversations</span></Link></p>
               <Avatar name={thread.contact.displayName} avatarJpeg={thread.contact.avatarJpeg} size={48} />
               <div className="thread-id">
                 <h1>{thread.contact.displayName}</h1>

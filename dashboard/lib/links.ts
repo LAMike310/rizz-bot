@@ -1,8 +1,10 @@
 import {CONTACT_PAGE, MESSAGE_PAGE} from './limits';
 
 export function inboxHref(contactLimit: number): string {
-  if (contactLimit === CONTACT_PAGE) return '/';
-  return `/?contactLimit=${contactLimit}`;
+  const params = new URLSearchParams();
+  params.set('view', 'list');
+  if (contactLimit !== CONTACT_PAGE) params.set('contactLimit', String(contactLimit));
+  return `/?${params.toString()}`;
 }
 
 export function threadHref(key: string, contactLimit: number): string {

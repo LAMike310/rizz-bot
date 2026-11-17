@@ -19,6 +19,7 @@ export async function InboxPage({
   if (contactKey && !isContactKey(contactKey)) notFound();
   const contactLimit = pageLimit(firstParam(searchParams.contactLimit), CONTACT_PAGE, CONTACT_MAX);
   const messageLimit = pageLimit(firstParam(searchParams.messageLimit), MESSAGE_PAGE, MESSAGE_MAX);
+  const listView = firstParam(searchParams.view) === 'list';
   let missing = false;
   let openFirst: string | null = null;
   try {
@@ -34,7 +35,7 @@ export async function InboxPage({
       }
     }
     if (missing) notFound();
-    if (!contactKey && inbox.contacts[0]) {
+    if (!contactKey && !listView && inbox.contacts[0]) {
       openFirst = threadHref(inbox.contacts[0].key, contactLimit);
     } else {
       return (

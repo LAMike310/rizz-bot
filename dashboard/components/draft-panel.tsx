@@ -70,10 +70,8 @@ export function DraftPanel({
               {draft.options.map((option, index) => {
                 const number = index + 1;
                 const selected = draft.selectedOption === number;
-                const toneClass = selected ? 'option selected' : 'option';
-                const path = sent && selected ? ' chosen' : sent && !selected ? ' receded' : '';
                 return (
-                  <li key={`${draft.id}-${number}`} className={`${toneClass}${path}`}>
+                  <li key={`${draft.id}-${number}`} className="option">
                     <span className={`option-index style-${option.style}`}>{number}</span>
                     <p className="option-label">
                       {optionHeading(option)}
