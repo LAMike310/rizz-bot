@@ -16,8 +16,14 @@ function localAuthOptions(config) {
   };
 }
 
+function chromeLooksLaunchable(executable) {
+  if (!executable || !fs.existsSync(executable)) return false;
+  if (process.platform !== 'darwin') return true;
+  return fs.existsSync(path.join(path.dirname(executable), '..', 'Frameworks'));
+}
+
 function projectChromePath(envPath) {
-  if (envPath && fs.existsSync(envPath)) return envPath;
+  if (chromeLooksLaunchable(envPath)) return envPath;
   const chromeRoot = path.join(__dirname, '..', '.cache', 'puppeteer', 'chrome');
   if (!fs.existsSync(chromeRoot)) return undefined;
   for (const version of fs.readdirSync(chromeRoot)) {
@@ -25,15 +31,21 @@ function projectChromePath(envPath) {
       chromeRoot, version, 'chrome-mac-arm64',
       'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'
     );
-    if (fs.existsSync(candidate)) return candidate;
+    if (chromeLooksLaunchable(candidate)) return candidate;
   }
   return undefined;
 }
 
 function chromeExecutablePath(envPath) {
-  return projectChromePath(envPath) || (() => {
-    try { return require('puppeteer').executablePath(); } catch { return undefined; }
-  })();
+  const fromProject = projectChromePath(envPath);
+  if (fromProject) return fromProject;
+  try {
+    const fromPuppeteer = require('puppeteer').executablePath();
+    if (chromeLooksLaunchable(fromPuppeteer)) return fromPuppeteer;
+  } catch { /* puppeteer may be unresolved */ }
+  const systemChrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  if (chromeLooksLaunchable(systemChrome)) return systemChrome;
+  return undefined;
 }
 
 function eventTimeMs(message, now) {

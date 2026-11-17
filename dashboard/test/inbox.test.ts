@@ -10,7 +10,7 @@ import {Avatar} from '../components/avatar';
 import {DraftPanel} from '../components/draft-panel';
 import {Timeline} from '../components/timeline';
 import {MessageItem} from '../components/message-item';
-import {isLocalHost} from '../lib/host';
+import {isAllowedInboxHost, isLocalHost} from '../lib/host';
 import {contactKey, isContactKey} from '../lib/keys';
 import {InboxError, openReadonly} from '../lib/open-db';
 import {parseOptions} from '../lib/options';
@@ -115,6 +115,15 @@ test('localhost host check accepts loopback names only', () => {
   assert.equal(isLocalHost('192.168.1.8:3000'), false);
   assert.equal(isLocalHost('evil.com'), false);
   assert.equal(isLocalHost(null), false);
+});
+
+test('inbox host check allows Tailscale MagicDNS and rejects other hosts', () => {
+  assert.equal(isAllowedInboxHost('mikes-macbook-air.tail544626.ts.net'), true);
+  assert.equal(isAllowedInboxHost('mikes-macbook-air.tail544626.ts.net:443'), true);
+  assert.equal(isAllowedInboxHost('127.0.0.1:3000'), true);
+  assert.equal(isAllowedInboxHost('evil.ts.net.example.com'), false);
+  assert.equal(isAllowedInboxHost('ts.net'), false);
+  assert.equal(isAllowedInboxHost('192.168.1.8:3000'), false);
 });
 
 test('contact keys are stable, url-safe, and hide the phone number', () => {
