@@ -6,13 +6,16 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {createElement} from 'react';
+import {Avatar} from '../components/avatar';
 import {DraftPanel} from '../components/draft-panel';
+import {Timeline} from '../components/timeline';
 import {MessageItem} from '../components/message-item';
 import {isLocalHost} from '../lib/host';
 import {contactKey, isContactKey} from '../lib/keys';
 import {InboxError, openReadonly} from '../lib/open-db';
 import {parseOptions} from '../lib/options';
 import {loadInbox, loadThread} from '../lib/queries';
+import {threadRows} from '../lib/rows';
 import {draftBadgeLabel, draftOpensOnLoad, isActionableDraft, listDraftStatus, statusLabel} from '../lib/status';
 
 const SCHEMA = `
@@ -23,6 +26,8 @@ const SCHEMA = `
     revision INTEGER NOT NULL DEFAULT 0,
     display_name TEXT NOT NULL DEFAULT '',
     archived INTEGER NOT NULL DEFAULT 0,
+    avatar_jpeg TEXT,
+    avatar_fetched_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE TABLE messages (
@@ -177,6 +182,7 @@ test('aliases do not duplicate a contact, and threads stay isolated', () => {
     assert.equal(inbox.total, 2);
     assert.equal(inbox.contacts[0].displayName, 'Camila');
     assert.equal(inbox.contacts[0].draftStatus, 'Draft ready');
+    assert.equal(inbox.contacts[0].readyPreview, 'El viernes podemos tomar algo.');
     assert.equal(inbox.contacts[0].actionableDraftId, '1');
     assert.equal(inbox.contacts[0].contactStatus, 'Enabled');
     assert.equal(inbox.contacts[1].displayName, 'Laura');
@@ -370,6 +376,33 @@ test('chat text is escaped and Spanish draft copy keeps its language', () => {
   assert.equal(expiredHtml.includes('To send, reply'), false);
 });
 
+test('consecutive stale drafts collapse and the latest card stays outside', () => {
+  const draft = (id: string, statusLabel: string): Extract<import('../lib/types').ConversationEvent, {kind: 'draft'}> => ({
+    kind: 'draft', id, timestamp: '2026-11-15T20:00:00.000Z', timeLabel: '3:00 PM', status: statusLabel === 'Stale' ? 'stale' : 'active',
+    statusLabel, sendable: false, options: [], selectedOption: null, relatedMessageId: null, previousDraftId: null,
+    approvedAt: null, sentAt: null, expiresAt: null, hasSendId: false, warning: null
+  });
+  const message: import('../lib/types').ConversationEvent = {
+    kind: 'message', id: 'm', timestamp: '2026-11-15T20:05:00.000Z', timeLabel: '3:05 PM', direction: 'incoming',
+    messageType: 'text', text: 'hola', language: null, placeholder: null, confirmedSend: false
+  };
+  const rows = threadRows([draft('1', 'Stale'), draft('2', 'Stale'), message, draft('3', 'Stale')]);
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].type, 'stack');
+  assert.equal(rows[0].type === 'stack' && rows[0].drafts.length, 2);
+  assert.equal(rows[2].type === 'event' && rows[2].event.kind === 'draft' && rows[2].event.id, '3');
+  const html = renderToStaticMarkup(createElement(Timeline, {
+    contactKey: 'c',
+    contactName: 'Camila',
+    events: [draft('1', 'Stale'), message, draft('9', 'Expired')],
+    hasEarlier: false,
+    olderHref: null,
+    atCap: false
+  }));
+  assert.equal(html.match(/draft-latest/g)?.length, 1);
+  assert.match(html, /Draft #9[\s\S]*draft-latest|draft-latest[\s\S]*Draft #9/);
+});
+
 test('stored active past expires_at is Expired in the list and on the card', () => {
   const fx = fixture();
   try {
@@ -412,6 +445,35 @@ test('stored active past expires_at is Expired in the list and on the card', () 
     assert.equal(liveDraft.statusLabel, 'Ready');
     assert.equal(liveDraft.sendable, true);
     reader.close();
+  } finally {
+    fx.close();
+  }
+});
+
+test('stored profile photo is returned, and initials remain when it is missing', () => {
+  const fx = fixture();
+  try {
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64');
+    fx.writer.prepare(`INSERT INTO contacts(chat_id, phone, enabled, display_name, avatar_jpeg) VALUES(?,?,1,?,?)`)
+      .run('a@c.us', '15551111', 'Camila', jpeg);
+    fx.writer.prepare(`INSERT INTO contacts(chat_id, phone, enabled, display_name) VALUES(?,?,1,?)`)
+      .run('b@c.us', '15552222', 'Laura');
+    const reader = openReadonly(fx.file);
+    const inbox = loadInbox(reader, 50, Date.parse('2026-11-16T20:00:00Z'));
+    const camila = inbox.contacts.find((contact) => contact.displayName === 'Camila');
+    const laura = inbox.contacts.find((contact) => contact.displayName === 'Laura');
+    assert.equal(camila?.avatarJpeg, jpeg);
+    assert.equal(laura?.avatarJpeg, null);
+    assert.equal(loadThread(reader, 'a@c.us', 20)?.contact.avatarJpeg, jpeg);
+    assert.equal(loadThread(reader, 'b@c.us', 20)?.contact.avatarJpeg, null);
+    reader.close();
+    const photo = renderToStaticMarkup(createElement(Avatar, {name: 'Camila', avatarJpeg: jpeg}));
+    assert.match(photo, new RegExp(`data:image/jpeg;base64,${jpeg}`));
+    const initials = renderToStaticMarkup(createElement(Avatar, {name: 'Camila'}));
+    assert.match(initials, />CA</);
+    assert.equal(initials.includes('<img'), false);
+    const rejected = renderToStaticMarkup(createElement(Avatar, {name: 'Camila', avatarJpeg: 'not-a-photo'}));
+    assert.match(rejected, />CA</);
   } finally {
     fx.close();
   }

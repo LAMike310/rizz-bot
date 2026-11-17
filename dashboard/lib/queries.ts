@@ -13,6 +13,7 @@ type ContactRow = {
   enabled: number;
   archived: number;
   display_name: string;
+  avatar_jpeg: string | null;
   revision: number;
   created_at: string;
   message_id: number | null;
@@ -24,12 +25,18 @@ type ContactRow = {
   message_created_at: string | null;
 };
 
+function contactAvatarSql(db: Database.Database): string {
+  const columns = db.prepare('PRAGMA table_info(contacts)').all() as {name: string}[];
+  return columns.some((column) => column.name === 'avatar_jpeg') ? 'c.avatar_jpeg' : 'NULL AS avatar_jpeg';
+}
+
 type ActiveDraftRow = {
   chat_id: string;
   id: number;
   revision: number;
   expires_at: string | null;
   status: string;
+  options_json?: string | null;
 };
 
 type MessageRow = {
@@ -68,7 +75,7 @@ export function loadInbox(db: Database.Database, limit: number, now = Date.now()
 } {
   return guardRead(() => {
     const contacts = db.prepare(`
-      SELECT c.chat_id, c.phone, c.enabled, c.archived, c.display_name, c.revision, c.created_at,
+      SELECT c.chat_id, c.phone, c.enabled, c.archived, c.display_name, ${contactAvatarSql(db)}, c.revision, c.created_at,
         m.id AS message_id, m.body, m.direction, m.message_timestamp, m.source_type,
         m.transcription_status, m.created_at AS message_created_at
       FROM contacts c
@@ -91,24 +98,30 @@ export function loadInbox(db: Database.Database, limit: number, now = Date.now()
       INNER JOIN (SELECT chat_id, MAX(id) AS id FROM drafts GROUP BY chat_id) newest ON newest.id = d.id
     `).all() as ActiveDraftRow[];
     const active = db.prepare(`
-      SELECT chat_id, id, revision, expires_at, status
+      SELECT chat_id, id, revision, expires_at, status, options_json
       FROM drafts
       WHERE status = 'active'
     `).all() as ActiveDraftRow[];
     const latestByChat = new Map(latest.map((row) => [row.chat_id, row]));
     const actionableId = new Map<string, number>();
+    const readyLine = new Map<string, string>();
     for (const draft of active) {
       const contact = contacts.find((row) => row.chat_id === draft.chat_id);
       if (!contact || !isActionableDraft(draft, contact, now)) continue;
       const previous = actionableId.get(draft.chat_id) ?? 0;
-      if (draft.id > previous) actionableId.set(draft.chat_id, draft.id);
+      if (draft.id > previous) {
+        actionableId.set(draft.chat_id, draft.id);
+        const line = firstSpanish(draft.options_json);
+        if (line) readyLine.set(draft.chat_id, line);
+      }
     }
     const mapped = contacts.map((row) => {
       const latestRow = latestByChat.get(row.chat_id);
       return toContact(row, {
         actionableId: actionableId.get(row.chat_id) ?? null,
         latestStatus: latestRow?.status ?? null,
-        latestExpiresAt: latestRow?.expires_at ?? null
+        latestExpiresAt: latestRow?.expires_at ?? null,
+        readyPreview: readyLine.get(row.chat_id) ?? null
       }, now);
     });
     mapped.sort((a, b) => {
@@ -142,7 +155,7 @@ export function resolveChatId(db: Database.Database, key: string): string | null
 export function loadThread(db: Database.Database, chatId: string, limit: number, now = Date.now()): Thread | null {
   return guardRead(() => {
     const contact = db.prepare(`
-      SELECT c.chat_id, c.phone, c.enabled, c.archived, c.display_name, c.revision, c.created_at,
+      SELECT c.chat_id, c.phone, c.enabled, c.archived, c.display_name, ${contactAvatarSql(db)}, c.revision, c.created_at,
         m.id AS message_id, m.body, m.direction, m.message_timestamp, m.source_type,
         m.transcription_status, m.created_at AS message_created_at
       FROM contacts c
@@ -227,6 +240,7 @@ function toContact(row: ContactRow, draft: {
   actionableId: number | null;
   latestStatus: string | null;
   latestExpiresAt: string | null;
+  readyPreview?: string | null;
 }, now: number): InboxContact {
   const activity = row.message_id == null ? null : epochMs(row.message_timestamp, row.message_created_at);
   const name = row.display_name.trim();
@@ -242,10 +256,17 @@ function toContact(row: ContactRow, draft: {
     lastActivityAt: activity == null ? null : new Date(activity).toISOString(),
     lastActivityLabel: activity == null ? null : formatWhen(activity, now),
     lastMessagePreview: row.message_id == null ? null : preview(row),
+    readyPreview: actionable ? draft.readyPreview ?? null : null,
     hasActionableDraft: actionable,
     actionableDraftId: actionable ? String(draft.actionableId) : null,
-    draftStatus: listDraftStatus(actionable, draft.latestStatus, draft.latestExpiresAt, now)
+    draftStatus: listDraftStatus(actionable, draft.latestStatus, draft.latestExpiresAt, now),
+    avatarJpeg: storedAvatar(row.avatar_jpeg)
   };
+}
+
+function storedAvatar(value: string | null | undefined): string | null {
+  if (!value || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return null;
+  return value;
 }
 
 function preview(row: ContactRow): string {
@@ -257,6 +278,12 @@ function preview(row: ContactRow): string {
   if (type !== 'text') return clip(placeholderFor(type));
   if (!row.body?.trim()) return 'No text';
   return clip(row.body.trim());
+}
+
+function firstSpanish(json: string | null | undefined): string | null {
+  const text = parseOptions(json ?? null).options.find((option) => option.replyEs)?.replyEs.replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  return text.length > 180 ? `${text.slice(0, 179).trimEnd()}…` : text;
 }
 
 function clip(text: string): string {

@@ -37,9 +37,17 @@ function chromeExecutablePath(envPath) {
 }
 
 function eventTimeMs(message, now) {
-  const stamp = Number(message?.timestamp);
+  const stamp = Number(message?.timestamp ?? message?.t ?? message?._data?.t);
   if (!Number.isFinite(stamp)) return now;
+  if (stamp <= 0) return 0;
   return stamp > 1e12 ? stamp : stamp * 1000;
+}
+
+function isFreshEvent(message, maxEventAgeMs, readyAtMs, now = Date.now()) {
+  const tsMs = eventTimeMs(message, now);
+  if (tsMs < now - maxEventAgeMs) return false;
+  if (readyAtMs && tsMs < readyAtMs - maxEventAgeMs) return false;
+  return true;
 }
 
 function chatAddress(value) {
@@ -915,19 +923,21 @@ function createWhatsAppClient(config, log, handlers) {
     }
     for (const message of messages) {
       const seenId = whatsappId(message);
-      if (!seenId || seenMessageIds.has(`self:${seenId}`)) continue;
+      const seenKey = seenId ? `self:${seenId}` : '';
+      if (!seenKey || seenMessageIds.has(seenKey)) continue;
+      seenMessageIds.add(seenKey);
+      // The scan includes older Message Yourself history. Acting on it resends
+      // /list, /add, and voice revisions after every restart.
+      if (!isFreshEvent(message, config.maxEventAgeMs, readyAt, Date.now())) continue;
       if (parseOwnerCommand(message?.body)) {
-        seenMessageIds.add(`self:${seenId}`);
         await onOwnerCommand(message);
         continue;
       }
       if (String(message?.type || '').toLowerCase() === 'ptt' || message?.isVoice) {
-        seenMessageIds.add(`self:${seenId}`);
         await handlers.onVoiceSanity?.({message, ownerId: owner, client});
         continue;
       }
       const approval = await parseOwnerApproval(message, owner, blockedAliases());
-      seenMessageIds.add(`self:${seenId}`);
       if (!approval) continue;
       log.info(`Owner approval ${approval.option} for quoted message ${approval.quotedWhatsappId}`);
       await handlers.onApproval?.(approval);
@@ -976,6 +986,11 @@ function createWhatsAppClient(config, log, handlers) {
   client.on('message_create', (message) => {
     const fromMe = Boolean(message?.fromMe || message?.id?.fromMe);
     if (fromMe) {
+      const seenId = whatsappId(message) || whatsappMessageId(message);
+      const seenKey = seenId ? `self:${seenId}` : '';
+      if (seenKey && seenMessageIds.has(seenKey)) return;
+      if (seenKey) seenMessageIds.add(seenKey);
+      if (!isFreshEvent(message, config.maxEventAgeMs, readyAt, Date.now())) return;
       void (async () => {
         if (await onOwnerCommand(message)) return;
         if (await handlers.onVoiceSanity?.({message, ownerId: ownerId(), client})) return;
@@ -1017,6 +1032,7 @@ function createWhatsAppClient(config, log, handlers) {
 
 module.exports = {
   createWhatsAppClient,
+  isFreshEvent,
   parseApprovedEvent,
   parseApprovedAudio,
   isIncomingAudio,

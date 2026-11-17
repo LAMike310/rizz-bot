@@ -219,7 +219,7 @@ class DatingAgent {
       this.logger.info(`Model advised no reply for revision ${revision}`);
       return;
     }
-    const expiresAt = new Date(this.now() + (this.config.draftTtlMinutes || 120) * 60000).toISOString();
+    const expiresAt = new Date(this.now() + (this.config.draftTtlMinutes || 100800) * 60000).toISOString();
     const draft = this.db.saveDraft({chatId, revision, options: response.options, model: response.model, usage: response.usage, expiresAt});
     if (!draft) return;
     this.logger.info(`Saved draft #${draft.id} using ${response.model || 'selected model'}`);

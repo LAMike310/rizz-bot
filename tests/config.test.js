@@ -26,10 +26,11 @@ test('Approved sending stays off unless both flags explicitly allow it',()=>{
     process.env.OPENROUTER_API_KEY='fake';
     process.env.OPENROUTER_MODEL='openrouter/free';
     delete process.env.APPROVED_SEND_ENABLED;
+    delete process.env.DRAFT_TTL_MINUTES;
     process.env.DRAFT_ONLY='false';
     assert.equal(loadConfig().draftOnly,false);
     assert.equal(loadConfig().approvedSendEnabled,false);
-    assert.equal(loadConfig().draftTtlMinutes,120);
+    assert.equal(loadConfig().draftTtlMinutes,100800);
     process.env.DRAFT_ONLY='true';
     process.env.APPROVED_SEND_ENABLED='true';
     assert.equal(loadConfig().approvedSendEnabled,true);

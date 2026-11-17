@@ -1,6 +1,19 @@
 import type {ReactNode} from 'react';
+import {Fraunces, Outfit} from 'next/font/google';
 import {AppFrame} from '../components/app-frame';
 import './globals.css';
+
+const display = Fraunces({
+  subsets: ['latin'],
+  variable: '--font-display',
+  display: 'swap'
+});
+
+const ui = Outfit({
+  subsets: ['latin'],
+  variable: '--font-ui',
+  display: 'swap'
+});
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -14,7 +27,7 @@ export const metadata = {
 
 export default function RootLayout({children}: {children: ReactNode}) {
   return (
-    <html lang="en">
+    <html lang="en" className={`${display.variable} ${ui.variable}`}>
       <head>
         <meta name="color-scheme" content="dark" />
       </head>

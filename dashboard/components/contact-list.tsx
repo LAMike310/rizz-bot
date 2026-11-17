@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import {useMemo, useState} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
 import {Avatar} from './avatar';
 import {moreContactsHref, threadHref} from '../lib/links';
 import {CONTACT_MAX, CONTACT_PAGE} from '../lib/limits';
@@ -9,7 +9,9 @@ import type {InboxContact} from '../lib/types';
 
 function draftTone(status: string): string {
   if (status === 'Draft ready') return 'draft-ready';
-  if (status === 'Expired' || status === 'Stale' || status === 'Failed' || status === 'Uncertain') return 'draft-attention';
+  if (status === 'Stale') return 'draft-attention';
+  if (status === 'Expired' || status === 'Uncertain') return 'draft-expired';
+  if (status === 'Failed') return 'draft-failed';
   if (status === 'No active draft') return 'draft-quiet';
   return '';
 }
@@ -34,18 +36,34 @@ export function ContactList({
 }) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'ready' | 'enabled' | 'paused'>('all');
+  const seen = useRef<Set<string> | null>(null);
+  const readyIds = useRef<string | null>(null);
+  const [arrived, setArrived] = useState<Set<string>>(new Set());
   const nextLimit = Math.min(contactLimit + CONTACT_PAGE, CONTACT_MAX);
-  const visible = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return contacts.filter((contact) => {
-      if (filter === 'ready' && !contact.hasActionableDraft) return false;
-      if (filter === 'enabled' && contact.contactStatus !== 'Enabled') return false;
-      if (filter === 'paused' && contact.contactStatus !== 'Paused') return false;
-      if (!needle) return true;
-      return contact.displayName.toLowerCase().includes(needle)
-        || (contact.phoneNumber || '').toLowerCase().includes(needle);
-    });
-  }, [contacts, query, filter]);
+  const needle = query.trim().toLowerCase();
+  const rows = useMemo(() => contacts.map((contact) => {
+    const matchesFilter = filter === 'all'
+      || (filter === 'ready' && contact.hasActionableDraft)
+      || (filter === 'enabled' && contact.contactStatus === 'Enabled')
+      || (filter === 'paused' && contact.contactStatus === 'Paused');
+    const matchesQuery = !needle
+      || contact.displayName.toLowerCase().includes(needle)
+      || (contact.phoneNumber || '').toLowerCase().includes(needle);
+    return {contact, match: matchesFilter && matchesQuery};
+  }), [contacts, filter, needle]);
+  const anyMatch = rows.some((row) => row.match);
+
+  useEffect(() => {
+    const ids = contacts.filter((contact) => contact.hasActionableDraft).map((contact) => contact.actionableDraftId).join(',');
+    const keys = new Set(contacts.map((contact) => contact.key));
+    if (seen.current) {
+      const fresh = new Set([...keys].filter((key) => !seen.current?.has(key)));
+      if (fresh.size) setArrived(fresh);
+      if (ids && ids !== readyIds.current) window.dispatchEvent(new CustomEvent('inbox-draft'));
+    }
+    readyIds.current = ids;
+    seen.current = keys;
+  }, [contacts]);
 
   return (
     <aside className="contact-column" aria-label="Contacts">
@@ -76,20 +94,25 @@ export function ContactList({
           </div>
         </details>
       </div>
-      {visible.length === 0 ? (
-        <p className="empty">{contacts.length === 0 ? 'No contacts are stored yet.' : 'No contacts match that search.'}</p>
+      {contacts.length === 0 ? (
+        <p className="empty">No contacts are stored yet.</p>
       ) : (
         <ul className="contact-list" role="list">
-          {visible.map((contact) => {
+          {!anyMatch ? <li className="empty-match">No contacts match that search.</li> : null}
+          {rows.map(({contact, match}) => {
             const current = contact.key === selectedKey;
+            const preview = contact.hasActionableDraft && contact.readyPreview
+              ? contact.readyPreview
+              : contact.lastMessagePreview ?? 'No messages yet';
             return (
-              <li key={contact.key}>
+              <li key={contact.key} className={`${match ? '' : 'filtered-out'}${arrived.has(contact.key) ? ' contact-arrive' : ''}`} inert={match ? undefined : true}>
                 <Link
                   href={threadHref(contact.key, contactLimit)}
                   aria-current={current ? 'page' : undefined}
                   className={current ? 'contact current' : 'contact'}
+                  tabIndex={match ? undefined : -1}
                 >
-                  <Avatar name={contact.displayName} size={44} />
+                  <Avatar name={contact.displayName} avatarJpeg={contact.avatarJpeg} size={44} />
                   <span className="contact-copy">
                     <span className="contact-line">
                       <span className="contact-name">{contact.displayName}</span>
@@ -108,7 +131,7 @@ export function ContactList({
                       <span className={draftTone(contact.draftStatus)}>{contact.draftStatus}</span>
                       {contact.actionableDraftId ? <span className="draft-badge">#{contact.actionableDraftId}</span> : null}
                     </span>
-                    <span className="contact-preview">{contact.lastMessagePreview ?? 'No messages yet'}</span>
+                    <span className={contact.hasActionableDraft && contact.readyPreview ? 'contact-preview preview-reply' : 'contact-preview'}>{preview}</span>
                   </span>
                 </Link>
               </li>

@@ -8,9 +8,11 @@ export type InboxContact = {
   lastActivityAt: string | null;
   lastActivityLabel: string | null;
   lastMessagePreview: string | null;
+  readyPreview: string | null;
   hasActionableDraft: boolean;
   actionableDraftId: string | null;
   draftStatus: string;
+  avatarJpeg: string | null;
 };
 
 export type DraftOption = {

@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {parseApprovedEvent,parseAddCommand,isOwnerSelfMessage,handleOwnerCommand,resolveTestContact,rememberApprovedAlias,chatMatchesApproved,localAuthOptions,contactMatchesNumber,savedContactName,whatsappMessageId} = require('../src/whatsapp');
+const {parseApprovedEvent,parseAddCommand,isFreshEvent,isOwnerSelfMessage,handleOwnerCommand,resolveTestContact,rememberApprovedAlias,chatMatchesApproved,localAuthOptions,contactMatchesNumber,savedContactName,whatsappMessageId} = require('../src/whatsapp');
 const {DraftDelivery} = require('../src/drafts');
 const {quietLogger} = require('./helpers');
 const target='15551234567@c.us';
@@ -21,7 +21,19 @@ test('WhatsApp filter: only approved private incoming text is processed', () => 
   assert.equal(parse(msg({body:''})),null);
   assert.equal(parse(msg({from:owner,to:owner})),null);
   assert.equal(parse(msg({timestamp:900})),null); // stale synced history
+  assert.equal(parse(msg({timestamp:undefined, t:900})),null); // stored models expose t, not timestamp
+  assert.equal(parse(msg({timestamp:undefined, t:1000})).chatId,target);
   assert.equal(parse(msg({id:{_serialized:'x',fromMe:true},fromMe:true})),null);
+});
+
+test('Restart replay ignores Message Yourself history from before ready', () => {
+  const readyAt = 1_700_000_000_000;
+  const now = readyAt + 5000;
+  const oldList = {body: '/list', timestamp: Math.floor((readyAt - 120000) / 1000)};
+  const recentAdd = {body: '/add +15551234567', timestamp: Math.floor((readyAt - 5000) / 1000)};
+  assert.equal(isFreshEvent(oldList, 30000, readyAt, now), false);
+  assert.equal(isFreshEvent(recentAdd, 30000, readyAt, now), true);
+  assert.equal(isFreshEvent({body: '/list', t: Math.floor((readyAt - 120000) / 1000)}, 30000, readyAt, now), false);
 });
 
 test('WhatsApp filter: manual outgoing is recognized; self-chat and groups are ignored', () => {

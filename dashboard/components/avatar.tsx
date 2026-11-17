@@ -1,6 +1,16 @@
 const STOPS = ['#3f8f6b', '#6d5efc', '#c46b4a', '#3d7ea6', '#8b6bb8', '#b4536a'];
 
-export function Avatar({name, size = 44}: {name: string; size?: number}) {
+function photoSource(avatarJpeg?: string | null): string | null {
+  if (!avatarJpeg || avatarJpeg.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(avatarJpeg)) return null;
+  return `data:image/jpeg;base64,${avatarJpeg}`;
+}
+
+export function Avatar({name, avatarJpeg = null, size = 44}: {name: string; avatarJpeg?: string | null; size?: number}) {
+  const photo = photoSource(avatarJpeg);
+  const frame = {width: size, height: size};
+  if (photo) {
+    return <img className="avatar" src={photo} alt="" width={size} height={size} style={frame} />;
+  }
   const parts = name.trim().split(/\s+/).filter(Boolean);
   const initials = (parts.length > 1 ? `${parts[0][0]}${parts[1][0]}` : (parts[0] || '?').slice(0, 2)).toUpperCase();
   let hash = 0;
@@ -10,7 +20,7 @@ export function Avatar({name, size = 44}: {name: string; size?: number}) {
   return (
     <span
       className="avatar"
-      style={{background: `linear-gradient(145deg, ${from}, ${to})`, width: size, height: size, fontSize: Math.max(12, Math.round(size * 0.34))}}
+      style={{background: `linear-gradient(160deg, ${from}, ${to})`, ...frame, fontSize: `${Math.max(0.7, (size * 0.34) / 16)}rem`}}
       aria-hidden="true"
     >
       {initials}

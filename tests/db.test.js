@@ -59,3 +59,51 @@ test('SQLite: enabling another contact keeps the previous one', () => {
     assert.equal(f.db.aliasesFor(f.chat).includes(f.chat), true);
   } finally {f.close();}
 });
+
+test('SQLite: profile photo is stored as jpeg base64 and rejected otherwise', () => {
+  const f = dbFixture();
+  try {
+    const names = f.db.db.prepare('PRAGMA table_info(contacts)').all().map((column) => column.name);
+    assert.equal(names.includes('avatar_jpeg'), true);
+    assert.equal(names.includes('avatar_fetched_at'), true);
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64');
+    const saved = f.db.saveContactAvatar(f.chat, jpeg);
+    assert.equal(saved.avatar_jpeg, jpeg);
+    assert.ok(saved.avatar_fetched_at);
+    const cleared = f.db.saveContactAvatar(f.chat, null);
+    assert.equal(cleared.avatar_jpeg, null);
+    assert.ok(cleared.avatar_fetched_at);
+    assert.throws(() => f.db.saveContactAvatar(f.chat, Buffer.from('not a jpeg').toString('base64')));
+    assert.throws(() => f.db.saveContactAvatar(f.chat, '%%%'));
+    assert.equal(f.db.contact(f.chat).avatar_jpeg, null);
+  } finally {f.close();}
+});
+
+test('SQLite: existing contacts gain profile photo columns', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const {DatabaseSync} = require('node:sqlite');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-avatar-'));
+  const filename = path.join(dir, 'test.db');
+  const raw = new DatabaseSync(filename);
+  raw.exec(`CREATE TABLE contacts (
+    chat_id TEXT PRIMARY KEY,
+    phone TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    revision INTEGER NOT NULL DEFAULT 0,
+    display_name TEXT NOT NULL DEFAULT '',
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`);
+  raw.close();
+  const db = new Store(filename, {driver: 'builtin'});
+  try {
+    const names = db.db.prepare('PRAGMA table_info(contacts)').all().map((column) => column.name);
+    assert.equal(names.includes('avatar_jpeg'), true);
+    assert.equal(names.includes('avatar_fetched_at'), true);
+  } finally {
+    db.close();
+    fs.rmSync(dir, {recursive: true, force: true});
+  }
+});

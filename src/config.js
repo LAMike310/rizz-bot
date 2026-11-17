@@ -45,7 +45,7 @@ function loadConfig(root = process.cwd()) {
     selfNotifications: bool('SELF_CHAT_NOTIFICATIONS', true),
     draftOnly: bool('DRAFT_ONLY', true),
     approvedSendEnabled: bool('APPROVED_SEND_ENABLED', false),
-    draftTtlMinutes: integer('DRAFT_TTL_MINUTES', 120, 1, 10080),
+    draftTtlMinutes: integer('DRAFT_TTL_MINUTES', 100800, 1, 100800),
     maxEnabledContacts: integer('MAX_ENABLED_CONTACTS', 10, 1, 100),
     maxEventAgeMs: integer('MAX_EVENT_AGE_MS', 30000, 0, 300000),
     clientId: process.env.WHATSAPP_CLIENT_ID || 'dating-agent',

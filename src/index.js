@@ -7,6 +7,7 @@ const {DraftDelivery} = require('./drafts');
 const {createWhatsAppClient} = require('./whatsapp');
 const {loadConfig, logger: createLogger} = require('./config');
 const {createVoiceSanity, downloadVoiceMedia} = require('./voice-sanity');
+const {refreshContactAvatars} = require('./profile-pic');
 
 async function main() {
   const config = loadConfig();
@@ -29,6 +30,14 @@ async function main() {
   let agent = null;
   let drafts = null;
   let closing = false;
+  let waReady = false;
+  let avatarChain = Promise.resolve();
+  function enqueueAvatars(rows) {
+    if (!waReady || !rows?.length) return;
+    avatarChain = avatarChain
+      .then(() => refreshContactAvatars({client, db, log, contacts: rows}))
+      .catch((error) => log.warn(`Profile photo refresh stopped: ${error.message}`));
+  }
   const voiceSanity = createVoiceSanity({db, config, log, ai, getDrafts: () => drafts});
   const client = createWhatsAppClient(config, log, {
     onLoadContacts: () => db.enabledContacts().map((row) => ({
@@ -38,7 +47,8 @@ async function main() {
       aliases: db.aliasesFor(row.chat_id)
     })),
     onContactEnabled: ({chatId, phone, displayName = '', aliases = []}) => {
-      db.enableContact(chatId, phone, displayName, aliases, {maxEnabled: config.maxEnabledContacts});
+      const saved = db.enableContact(chatId, phone, displayName, aliases, {maxEnabled: config.maxEnabledContacts});
+      enqueueAvatars([saved]);
     },
     onAliasLinked: ({chatId, alias}) => db.addAlias(chatId, alias),
     onPause: (phone) => {
@@ -75,6 +85,8 @@ async function main() {
       if (abandonedVoice) {
         drafts.notifyOwner('A voice note was still processing when the app restarted. It was not used for a draft. Review that chat manually.').catch(() => {});
       }
+      waReady = true;
+      enqueueAvatars(db.enabledContacts());
     },
     onIncoming: (message) => agent?.onIncoming(message),
     onIncomingAudio: ({message, ...audio}) => agent?.onIncomingAudio({
@@ -85,7 +97,7 @@ async function main() {
     onApproval: (command) => agent?.handleApproval(command),
     onSelfMessages: (messages) => agent?.observeSelfChat(messages),
     onVoiceSanity: (event) => voiceSanity.handle(event),
-    onDisconnected: () => {agent?.stop(); agent = null;}
+    onDisconnected: () => {waReady = false; agent?.stop(); agent = null;}
   });
   async function shutdown(signal, exitCode = 0) {
     if (closing) return;

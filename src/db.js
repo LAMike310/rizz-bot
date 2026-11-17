@@ -36,6 +36,8 @@ class Store {
         revision INTEGER NOT NULL DEFAULT 0,
         display_name TEXT NOT NULL DEFAULT '',
         archived INTEGER NOT NULL DEFAULT 0,
+        avatar_jpeg TEXT,
+        avatar_fetched_at TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
       CREATE TABLE IF NOT EXISTS messages (
@@ -73,6 +75,7 @@ class Store {
     `);
     this.ensureContactName();
     this.ensureArchivedColumn();
+    this.ensureAvatarColumns();
     this.ensureVoiceColumns();
     this.ensureAliases(file, existed);
     this.settleInterruptedSends();
@@ -127,6 +130,27 @@ class Store {
     if (columns.length && !columns.some(column => column.name === 'archived')) {
       this.db.exec(`ALTER TABLE contacts ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`);
     }
+  }
+  ensureAvatarColumns() {
+    const columns = this.db.prepare('PRAGMA table_info(contacts)').all();
+    if (!columns.length) return;
+    const names = new Set(columns.map(column => column.name));
+    if (!names.has('avatar_jpeg')) this.db.exec('ALTER TABLE contacts ADD COLUMN avatar_jpeg TEXT');
+    if (!names.has('avatar_fetched_at')) this.db.exec('ALTER TABLE contacts ADD COLUMN avatar_fetched_at TEXT');
+  }
+  saveContactAvatar(chatId, base64) {
+    if (!this.contact(chatId)) throw new Error('Unknown contact');
+    let stored = null;
+    if (base64 != null) {
+      const text = String(base64).trim();
+      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(text) || text.length % 4 !== 0) throw new Error('Invalid profile photo');
+      const bytes = Buffer.from(text, 'base64');
+      if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) throw new Error('Invalid profile photo');
+      stored = bytes.toString('base64');
+    }
+    this.db.prepare('UPDATE contacts SET avatar_jpeg=?, avatar_fetched_at=? WHERE chat_id=?')
+      .run(stored, new Date().toISOString(), chatId);
+    return this.contact(chatId);
   }
   ensureAliases(file, existed = false) {
     const hasContacts = this.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='contacts'`).get();

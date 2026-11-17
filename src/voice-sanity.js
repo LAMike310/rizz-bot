@@ -270,7 +270,7 @@ function createVoiceSanity({db, config, log, ai = null, getDrafts = () => null, 
       return;
     }
     const revision = db.revision(draft.chat_id);
-    const expiresAt = new Date(Date.now() + (config.draftTtlMinutes || 120) * 60000).toISOString();
+    const expiresAt = new Date(Date.now() + (config.draftTtlMinutes || 100800) * 60000).toISOString();
     const saved = revision === draft.revision
       ? db.saveDraft({chatId: draft.chat_id, revision, options: response.options, model: response.model, usage: response.usage, expiresAt})
       : null;

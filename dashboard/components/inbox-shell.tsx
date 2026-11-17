@@ -54,7 +54,7 @@ export function InboxShell({
           <>
             <div className="thread-head">
               <p className="back"><Link href={inboxHref(contactLimit)}>Back</Link></p>
-              <Avatar name={thread.contact.displayName} size={48} />
+              <Avatar name={thread.contact.displayName} avatarJpeg={thread.contact.avatarJpeg} size={48} />
               <div className="thread-id">
                 <h1>{thread.contact.displayName}</h1>
                 {thread.contact.phoneNumber ? <p className="thread-phone">{thread.contact.phoneNumber}</p> : null}
@@ -67,6 +67,7 @@ export function InboxShell({
             <Timeline
               contactKey={thread.contact.key}
               contactName={thread.contact.displayName}
+              avatarJpeg={thread.contact.avatarJpeg}
               events={thread.events}
               hasEarlier={thread.hasEarlier}
               olderHref={thread.hasEarlier && nextMessages > messageLimit ? olderMessagesHref(thread.contact.key, contactLimit, nextMessages) : null}

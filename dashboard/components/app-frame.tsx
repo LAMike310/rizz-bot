@@ -17,6 +17,7 @@ export function AppFrame({children}: {children: ReactNode}) {
   const pending = useRef(false);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [failed, setFailed] = useState(false);
+  const [breath, setBreath] = useState(false);
   const [, setClock] = useState(0);
 
   const refresh = useCallback(async () => {
@@ -36,6 +37,20 @@ export function AppFrame({children}: {children: ReactNode}) {
   useEffect(() => {
     const clock = window.setInterval(() => setClock((value) => value + 1), 1000);
     return () => window.clearInterval(clock);
+  }, []);
+
+  useEffect(() => {
+    let timer = 0;
+    const onDraft = () => {
+      setBreath(true);
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => setBreath(false), 1200);
+    };
+    window.addEventListener('inbox-draft', onDraft);
+    return () => {
+      window.removeEventListener('inbox-draft', onDraft);
+      window.clearTimeout(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -60,14 +75,14 @@ export function AppFrame({children}: {children: ReactNode}) {
       <header className="app-header">
         <p className="brand-lockup">
           <span className="mark" aria-hidden="true">//</span>
-          <span className="brand">Dating Agent</span>
+          <span className="brand">RizzBot</span>
         </p>
         <span className="header-rule" aria-hidden="true" />
         <p className="inbox-tab">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4z" fill="none" stroke="currentColor" strokeWidth="1.8"/><path d="M4 7l8 6 8-6" fill="none" stroke="currentColor" strokeWidth="1.8"/></svg>
           Conversations
         </p>
-        <p className="local-pill"><span className="local-dot" aria-hidden="true" />Read-only · approve in WhatsApp</p>
+        <p className={breath ? 'local-pill pill-breath' : 'local-pill'}><span className="local-dot" aria-hidden="true" />Read-only · approve in WhatsApp</p>
         <p className="updated">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" strokeWidth="1.8"/><path d="M12 8v5l3 2" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
           {failed ? 'Refresh failed' : updated}
