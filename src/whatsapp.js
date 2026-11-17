@@ -589,23 +589,32 @@ function blockedChatIds(value) {
   return new Set([value]);
 }
 
+function normalizeChatId(value) {
+  const id = chatAddress(value);
+  if (!id) return '';
+  return id.replace(/@s\.whatsapp\.net$/i, '@c.us');
+}
+
+function ownerIdSet(ownerId) {
+  const values = ownerId instanceof Set ? ownerId : [ownerId];
+  return new Set([...values].map(normalizeChatId).filter(Boolean));
+}
+
 function isOwnerSelfMessage(message, ownerId, blocked = '') {
-  if (!ownerId) return false;
+  const owners = ownerIdSet(ownerId);
+  if (!owners.size) return false;
   if (!Boolean(message?.fromMe || message?.id?.fromMe)) return false;
-  const ids = [chatAddress(message?.from), chatAddress(message?.to), chatAddress(message?.id?.remote)].filter(Boolean);
+  const ids = [message?.from, message?.to, message?.id?.remote].map(normalizeChatId).filter(Boolean);
   if (!ids.length) return false;
-  if (ids.every((id) => id === ownerId)) return true;
-  const only = new Set(ids);
-  if (only.size !== 1) return false;
-  const chatId = ids[0];
-  if (chatId.endsWith('@g.us') || chatId.endsWith('@newsletter')) return false;
-  if (blockedChatIds(blocked).has(chatId)) return false;
-  return chatId.endsWith('@c.us') || chatId.endsWith('@lid');
+  if (ids.some((id) => id.endsWith('@g.us') || id.endsWith('@newsletter'))) return false;
+  const blockedIds = new Set([...blockedChatIds(blocked)].map(normalizeChatId));
+  if (ids.some((id) => blockedIds.has(id))) return false;
+  return ids.every((id) => owners.has(id));
 }
 
 async function handleOwnerCommand(message, hooks) {
   const parsed = parseOwnerCommand(message?.body);
-  if (!isOwnerSelfMessage(message, hooks.ownerId, hooks.blocked)) {
+  if (!isOwnerSelfMessage(message, hooks.ownerIds || hooks.ownerId, hooks.blocked)) {
     if (parsed) hooks.log?.warn(`Ignored /${parsed.command}: message is not Message Yourself`);
     return false;
   }
@@ -912,9 +921,49 @@ function createWhatsAppClient(config, log, handlers) {
   });
 
   const ownerId = () => serializeWid(client.info?.wid);
+  let ownerIds = new Set();
+
+  async function refreshOwnerIds() {
+    const ids = ownerIdSet(ownerId());
+    if (client.pupPage) {
+      try {
+        const found = await client.pupPage.evaluate(() => {
+          const out = [];
+          const remember = (wid) => {
+            try {
+              if (!wid) return;
+              if (typeof wid === 'string') out.push(wid);
+              else if (typeof wid._serialized === 'string') out.push(wid._serialized);
+              else if (wid.user && wid.server) out.push(`${wid.user}@${wid.server}`);
+              const asString = wid.toString?.();
+              if (typeof asString === 'string' && asString.includes('@')) out.push(asString);
+            } catch { /* a missing self id is skipped */ }
+          };
+          try {
+            const {getMaybeMeLidUser, getMaybeMePnUser} = window.require('WAWebUserPrefsMeUser');
+            remember(getMaybeMeLidUser());
+            remember(getMaybeMePnUser());
+          } catch { /* prefs module can be absent */ }
+          try { remember(window.require('WAWebConnModel').Conn.wid); } catch { /* connection model unavailable */ }
+          return out;
+        });
+        for (const id of found || []) ids.add(normalizeChatId(id));
+      } catch (error) {
+        log.warn(`Owner id lookup failed (${error.message})`);
+      }
+    }
+    ids.delete('');
+    if (ids.size) ownerIds = ids;
+    return ownerIds;
+  }
+
+  function replyOwnerId() {
+    const ids = [...ownerIds];
+    return ids.find((id) => id.endsWith('@c.us')) || ownerId() || ids[0] || '';
+  }
 
   async function pollSelfApprovals() {
-    const owner = ownerId();
+    const owner = await refreshOwnerIds();
     if (!owner || !client.pupPage) return;
     let messages = [];
     try {
@@ -957,7 +1006,8 @@ function createWhatsAppClient(config, log, handlers) {
   }
 
   const onOwnerCommand = (message) => handleOwnerCommand(message, {
-    ownerId: ownerId(),
+    ownerId: replyOwnerId(),
+    ownerIds: ownerIds.size ? ownerIds : ownerIdSet(ownerId()),
     blocked: blockedAliases(),
     log,
     resolve: (number) => resolveTestContact(client, number, log),
@@ -1004,9 +1054,10 @@ function createWhatsAppClient(config, log, handlers) {
       if (seenKey) seenMessageIds.add(seenKey);
       if (!isFreshEvent(message, config.maxEventAgeMs, readyAt, Date.now())) return;
       void (async () => {
+        await refreshOwnerIds();
         if (await onOwnerCommand(message)) return;
-        if (await handlers.onVoiceSanity?.({message, ownerId: ownerId(), client})) return;
-        const approval = await parseOwnerApproval(message, ownerId(), blockedAliases());
+        if (await handlers.onVoiceSanity?.({message, ownerId: ownerIds.size ? ownerIds : ownerId(), client})) return;
+        const approval = await parseOwnerApproval(message, ownerIds.size ? ownerIds : ownerId(), blockedAliases());
         if (approval) {
           await handlers.onApproval?.(approval);
           return;

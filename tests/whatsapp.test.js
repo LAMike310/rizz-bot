@@ -50,7 +50,14 @@ test('Owner self-chat /add enables drafting and is ignored from anyone else', as
   const command = {id:{_serialized:'cmd',fromMe:true,remote:owner},from:owner,to:owner,fromMe:true,type:'chat',body:'/add +15551234567'};
   assert.equal(isOwnerSelfMessage(command, owner), true);
   assert.equal(isOwnerSelfMessage({...command, from:target, to:owner}, owner), false);
+  assert.equal(isOwnerSelfMessage({...command, from:target, to:target, id:{...command.id, remote:target}}, owner), false);
   assert.equal(isOwnerSelfMessage({...command, fromMe:false, id:{...command.id, fromMe:false}}, owner), false);
+  const lid = '111222333444555@lid';
+  const owners = new Set([owner, lid]);
+  const self = {id:{_serialized:'cmd', fromMe:true, remote:owner}, from:lid, to:owner, fromMe:true, body:'/list'};
+  assert.equal(isOwnerSelfMessage(self, owners), true);
+  assert.equal(isOwnerSelfMessage({...self, from:`${owner.split('@')[0]}@s.whatsapp.net`, to:owner}, owner), true);
+  assert.equal(isOwnerSelfMessage({...self, to:target}, owners), false);
   const sent = [];
   const enabled = [];
   const aliases = new Set([target]);

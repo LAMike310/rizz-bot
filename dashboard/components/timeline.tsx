@@ -71,8 +71,9 @@ export function Timeline({
     const el = scroller.current;
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    memory.set(contactKey, {distance, following: false});
-    setAway(distance >= 64);
+    const following = distance < 64;
+    memory.set(contactKey, {distance, following});
+    setAway(!following);
   }
 
   useLayoutEffect(() => {

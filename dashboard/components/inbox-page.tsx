@@ -1,12 +1,13 @@
 import {connection} from 'next/server';
 import {notFound, redirect} from 'next/navigation';
-import {InboxShell} from './inbox-shell';
+import {LiveInbox} from './live-inbox';
 import {threadHref} from '../lib/links';
 import {isContactKey} from '../lib/keys';
 import {CONTACT_MAX, CONTACT_PAGE, MESSAGE_MAX, MESSAGE_PAGE, firstParam, pageLimit} from '../lib/limits';
 import {InboxError} from '../lib/open-db';
 import {loadInbox, loadThread, resolveChatId} from '../lib/queries';
 import {database} from '../lib/session';
+import {inboxStamp} from '../lib/stamp';
 
 export async function InboxPage({
   contactKey,
@@ -39,16 +40,22 @@ export async function InboxPage({
       openFirst = threadHref(inbox.contacts[0].key, contactLimit);
     } else {
       return (
-        <InboxShell
-          contacts={inbox.contacts}
-          total={inbox.total}
-          enabled={inbox.enabled}
-          paused={inbox.paused}
-          removed={inbox.removed}
-          hasMoreContacts={inbox.hasMoreContacts}
+        <LiveInbox
+          contactKey={contactKey}
           contactLimit={contactLimit}
           messageLimit={messageLimit}
-          thread={thread}
+          initial={{
+            revision: inboxStamp(db),
+            contacts: inbox.contacts,
+            total: inbox.total,
+            enabled: inbox.enabled,
+            paused: inbox.paused,
+            removed: inbox.removed,
+            hasMoreContacts: inbox.hasMoreContacts,
+            contactLimit,
+            messageLimit,
+            thread
+          }}
         />
       );
     }

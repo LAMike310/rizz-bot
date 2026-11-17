@@ -60,3 +60,16 @@ export type Thread = {
   hasEarlier: boolean;
   messageLimit: number;
 };
+
+export type InboxPayload = {
+  revision: string;
+  contacts: InboxContact[];
+  total: number;
+  enabled: number;
+  paused: number;
+  removed: number;
+  hasMoreContacts: boolean;
+  contactLimit: number;
+  messageLimit: number;
+  thread: Thread | null;
+};

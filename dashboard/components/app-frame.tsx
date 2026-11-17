@@ -1,7 +1,6 @@
 'use client';
 
-import {useRouter} from 'next/navigation';
-import {useCallback, useEffect, useRef, useState, type ReactNode} from 'react';
+import {useEffect, useState, type ReactNode} from 'react';
 
 function relativeUpdate(ms: number): string {
   const seconds = Math.max(0, Math.round((Date.now() - ms) / 1000));
@@ -13,30 +12,28 @@ function relativeUpdate(ms: number): string {
 }
 
 export function AppFrame({children}: {children: ReactNode}) {
-  const router = useRouter();
-  const pending = useRef(false);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [failed, setFailed] = useState(false);
   const [breath, setBreath] = useState(false);
   const [, setClock] = useState(0);
 
-  const refresh = useCallback(async () => {
-    if (document.visibilityState === 'hidden' || pending.current) return;
-    pending.current = true;
-    try {
-      await router.refresh();
-      setFailed(false);
-      setUpdatedAt(Date.now());
-    } catch {
-      setFailed(true);
-    } finally {
-      pending.current = false;
-    }
-  }, [router]);
-
   useEffect(() => {
     const clock = window.setInterval(() => setClock((value) => value + 1), 1000);
     return () => window.clearInterval(clock);
+  }, []);
+
+  useEffect(() => {
+    const onSync = (event: Event) => {
+      const ok = Boolean((event as CustomEvent<{ok?: boolean}>).detail?.ok);
+      if (ok) {
+        setFailed(false);
+        setUpdatedAt(Date.now());
+      } else {
+        setFailed(true);
+      }
+    };
+    window.addEventListener('inbox-sync', onSync);
+    return () => window.removeEventListener('inbox-sync', onSync);
   }, []);
 
   useEffect(() => {
@@ -52,19 +49,6 @@ export function AppFrame({children}: {children: ReactNode}) {
       window.clearTimeout(timer);
     };
   }, []);
-
-  useEffect(() => {
-    setUpdatedAt(Date.now());
-    const timer = window.setInterval(() => { void refresh(); }, 4000);
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') void refresh();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, [refresh]);
 
   const updated = updatedAt ? relativeUpdate(updatedAt) : 'Waiting for first refresh';
 
