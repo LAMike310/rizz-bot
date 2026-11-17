@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('node:fs');
-const {formatConfirmation, formatRejection, draftIdFromNotification} = require('./drafts');
+const {draftIdFromNotification} = require('./drafts');
+const {approveAndSendDraft} = require('./approval');
 const {transcribeAudio} = require('./transcribe');
 const {audioFormat} = require('./voice-sanity');
 
@@ -268,63 +269,25 @@ class DatingAgent {
     this.due.delete(chatId);
     this.waitingTranscript.delete(chatId);
   }
-  async handleApproval({approvalWhatsappId, quotedWhatsappId, option}) {
-    if (!approvalWhatsappId || ![1, 2, 3].includes(option)) {
-      return {ok: false, code: 'invalid'};
-    }
-    if (!quotedWhatsappId) {
-      this.logger.info(`Unquoted ${option} was ignored`);
-      await this.drafts.notifyOwner('Reply 1, 2, or 3 on the draft itself. Nothing was sent.');
-      return {ok: false, code: 'unquoted'};
-    }
-    const now = new Date(this.now()).toISOString();
-    const sendingEnabled = this.drafts.canSendToContact();
-    const claimed = this.db.claimApproval({
-      notificationWhatsappId: quotedWhatsappId,
-      approvalWhatsappId,
-      option,
-      now,
-      dryRun: !sendingEnabled
+  approveAndSendDraft(input) {
+    return approveAndSendDraft({
+      db: this.db,
+      drafts: this.drafts,
+      logger: this.logger,
+      now: () => new Date(this.now()).toISOString(),
+      contactName: (chatId) => this.contactName(chatId),
+      ready: true,
+      ...input
     });
-    if (!claimed.ok) {
-      this.logger.info(`Rejected approval ${approvalWhatsappId}: ${claimed.code}`);
-      if (claimed.draft && claimed.code !== 'duplicate-approval') {
-        await this.drafts.notifyOwner(formatRejection(claimed.draft, claimed.code));
-      }
-      return claimed;
-    }
-    if (!sendingEnabled) {
-      this.logger.info(`Approval matched draft #${claimed.draft.id} option ${option}; sending is disabled`);
-      await this.drafts.notifyOwner(`Draft #${claimed.draft.id} — option ${option} recognized. Sending is disabled. Nothing was sent.`);
-      return {ok: false, code: 'send-disabled', draft: claimed.draft};
-    }
-    if (!this.db.isEnabled(claimed.chatId)) {
-      this.db.abortUnsent(claimed.draft.id);
-      this.logger.info(`Approval matched draft #${claimed.draft.id}; contact is paused`);
-      await this.drafts.notifyOwner(formatRejection(claimed.draft, 'paused'));
-      return {ok: false, code: 'paused', draft: this.db.draft(claimed.draft.id)};
-    }
-    try {
-      const sent = await this.drafts.sendApproved({chatId: claimed.chatId, text: claimed.text});
-      if (!sent.ok) {
-        const refused = sent.reason === 'not-allowlisted' || sent.reason === 'missing-recipient' || sent.reason === 'owner-recipient';
-        if (refused) this.db.abortUnsent(claimed.draft.id);
-        else this.db.markUncertain(claimed.draft.id);
-        this.logger.error(`Approved send refused (${sent.reason})`);
-        await this.drafts.notifyOwner(formatRejection(claimed.draft, refused ? 'paused' : 'uncertain'));
-        return {ok: false, code: sent.reason, draft: this.db.draft(claimed.draft.id)};
-      }
-      this.db.markSent(claimed.draft.id, sent.whatsappId, now);
-      const saved = this.db.draft(claimed.draft.id);
-      await this.drafts.notifyOwner(formatConfirmation(saved, this.contactName(saved.chat_id)));
-      this.logger.info(`Draft #${saved.id} option ${option} sent to ${saved.chat_id}`);
-      return {ok: true, code: 'sent', draft: saved};
-    } catch (error) {
-      this.db.markUncertain(claimed.draft.id);
-      this.logger.error(`Approved send unconfirmed (${error.message}). No automatic retry.`);
-      await this.drafts.notifyOwner(formatRejection(claimed.draft, 'uncertain'));
-      return {ok: false, code: 'uncertain', draft: this.db.draft(claimed.draft.id)};
-    }
+  }
+  handleApproval({approvalWhatsappId, quotedWhatsappId, option, ready = true}) {
+    return this.approveAndSendDraft({
+      source: 'whatsapp',
+      option,
+      approvalEventId: approvalWhatsappId,
+      notificationWhatsappId: quotedWhatsappId,
+      ready
+    });
   }
   async drain() {
     // Test utility: wait for already-running generations; does not advance timers.

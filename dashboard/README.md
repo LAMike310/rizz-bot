@@ -1,6 +1,29 @@
 # Agent Inbox
 
-Local, read-only Next.js view of the WhatsApp dating agent's SQLite database. The bot remains the only writer. This app does not send, approve, pause, or migrate anything.
+Local Next.js view of the WhatsApp dating agent's SQLite database. The dashboard opens that file read-only. It does not migrate the schema, and it does not create a WhatsApp client.
+
+Desktop send is a second approval interface. It is off unless `DASHBOARD_SEND_ENABLED=true`. When it is on, Confirm Send calls the agent process on `127.0.0.1`. The agent reuses the same draft claim and the existing WhatsApp client. Tailscale access to this page does not authorize a send.
+
+## Enable desktop send
+
+Set the same values in the agent `.env` and `dashboard/.env.local`. Each secret must be at least 16 characters. Leave the flag false until the tests pass.
+
+```bash
+DASHBOARD_SEND_ENABLED=true
+DASHBOARD_AGENT_TOKEN=replace-with-a-long-random-string
+DASHBOARD_AGENT_PORT=39217
+```
+
+The dashboard also needs:
+
+```bash
+DASHBOARD_OWNER_SECRET=replace-with-a-different-long-secret
+DASHBOARD_SESSION_SECRET=replace-with-a-third-long-secret
+```
+
+Restart the agent, then the dashboard. On a desktop browser, enter the owner secret and choose Unlock send. Hover a Ready draft option and confirm the stored recipient and Spanish text. The bridge listens only on `127.0.0.1` and is not published through Tailscale Serve.
+
+`APPROVED_SEND_ENABLED=true` and `DRAFT_ONLY=false` are still required before either approval path can dispatch. If the agent is disconnected, or a send result is uncertain, nothing is retried automatically.
 
 ## Schema map
 
@@ -14,6 +37,7 @@ Inspected from `src/db.js`. No columns were added.
 | Draft | `drafts` | `id`, `chat_id` | `revision`, `status`, `options_json`, `selected_option`, `approved_at`, `sent_at`, `sent_whatsapp_id` (presence only), `expires_at`, `created_at` |
 | Revision link | Not stored | — | `drafts.revision` is the contact's counter at creation time, not a previous draft id |
 | Send result | `drafts` | `id` | `status` of `sending`, `sent`, or `uncertain`, plus `selected_option`, `approved_at`, `sent_at`, and whether `sent_whatsapp_id` is present |
+| Send attempt | `send_attempts` | `id`, unique `event_key` | One claim per draft approval. `source` is `whatsapp` or `dashboard`. A restart moves `sending` to `uncertain` and does not resend |
 
 Indexes already present: `messages(chat_id, id)`, `drafts(chat_id, id)`, `contact_aliases(chat_id)`, plus primary keys and the unique draft notification/approval ids. There is no index on `messages.message_timestamp` or `drafts.status`. Those lookups scan one contact's rows, or the small set of `active` drafts. V1 does not add indexes.
 

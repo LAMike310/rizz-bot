@@ -11,7 +11,7 @@ function relativeUpdate(ms: number): string {
   return `Updated ${new Intl.DateTimeFormat('en-US', {hour: 'numeric', minute: '2-digit'}).format(ms)}`;
 }
 
-export function AppFrame({children}: {children: ReactNode}) {
+export function AppFrame({children, desktopSend = false}: {children: ReactNode; desktopSend?: boolean}) {
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [failed, setFailed] = useState(false);
   const [breath, setBreath] = useState(false);
@@ -66,7 +66,7 @@ export function AppFrame({children}: {children: ReactNode}) {
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4z" fill="none" stroke="currentColor" strokeWidth="1.8"/><path d="M4 7l8 6 8-6" fill="none" stroke="currentColor" strokeWidth="1.8"/></svg>
           Conversations
         </p>
-        <p className={breath ? 'local-pill pill-breath' : 'local-pill'}><span className="local-dot" aria-hidden="true" />Read-only · approve in WhatsApp</p>
+        <p className={breath ? 'local-pill pill-breath' : 'local-pill'}><span className="local-dot" aria-hidden="true" />{desktopSend ? 'Approve in WhatsApp or on desktop' : 'Read-only · approve in WhatsApp'}</p>
         <p className="updated">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" strokeWidth="1.8"/><path d="M12 8v5l3 2" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
           {failed ? 'Refresh failed' : updated}

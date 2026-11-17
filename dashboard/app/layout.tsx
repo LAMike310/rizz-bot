@@ -1,7 +1,9 @@
 import type {ReactNode} from 'react';
 import type {Metadata, Viewport} from 'next';
+import {cookies} from 'next/headers';
 import {Fraunces, Outfit} from 'next/font/google';
 import {AppFrame} from '../components/app-frame';
+import {sendControlMode} from '../lib/owner-auth';
 import './globals.css';
 
 const display = Fraunces({
@@ -44,14 +46,16 @@ export const viewport: Viewport = {
   themeColor: '#050909'
 };
 
-export default function RootLayout({children}: {children: ReactNode}) {
+export default async function RootLayout({children}: {children: ReactNode}) {
+  const jar = await cookies();
+  const desktopSend = sendControlMode(jar.get('inbox_owner')?.value) !== 'off';
   return (
     <html lang="en" className={`${display.variable} ${ui.variable}`}>
       <head>
         <meta name="color-scheme" content="dark" />
       </head>
       <body>
-        <AppFrame>{children}</AppFrame>
+        <AppFrame desktopSend={desktopSend}>{children}</AppFrame>
       </body>
     </html>
   );

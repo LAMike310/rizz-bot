@@ -1,6 +1,7 @@
+import {useRef, useState} from 'react';
 import {optionHeading} from '../lib/options';
 import {dayText} from '../lib/time';
-import type {ConversationEvent} from '../lib/types';
+import type {ConversationEvent, SendControls} from '../lib/types';
 
 function generatedWhen(iso: string, timeLabel: string): string {
   if (dayText(iso) === 'Today') return timeLabel;
@@ -12,16 +13,37 @@ function generatedWhen(iso: string, timeLabel: string): string {
 
 type DraftEvent = Extract<ConversationEvent, {kind: 'draft'}>;
 
+const RESULT: Record<string, string> = {
+  SENT: 'Sent',
+  IN_PROGRESS: 'Sending',
+  UNKNOWN_OUTCOME: 'Send status unknown — do not retry',
+  INVALID_OPTION: 'That option cannot be sent.',
+  UNAUTHORIZED: 'Sending is locked.',
+  CONTACT_DISABLED: 'This contact is not approved.',
+  DRAFT_NOT_FOUND: 'Draft unavailable.',
+  DRAFT_NOT_SENDABLE: 'This draft can no longer be sent.',
+  IDENTITY_MISMATCH: 'Recipient identity could not be verified. Nothing was sent.',
+  WHATSAPP_UNAVAILABLE: 'WhatsApp is not connected. Nothing was sent.',
+  SEND_DISABLED: 'Dashboard send is turned off.',
+  NOT_CONFIGURED: 'Dashboard send is not configured on the server.'
+};
+
 export function DraftPanel({
   draft,
   open,
   latest = false,
-  onToggle
+  onToggle,
+  sendControls = 'off',
+  recipientName = '',
+  recipientIdentity = ''
 }: {
   draft: DraftEvent;
   open: boolean;
   latest?: boolean;
   onToggle: (id: string, open: boolean) => void;
+  sendControls?: SendControls;
+  recipientName?: string;
+  recipientIdentity?: string;
 }) {
   const selectedMissing = draft.selectedOption != null && !draft.options[draft.selectedOption - 1];
   const when = generatedWhen(draft.timestamp, draft.timeLabel);
@@ -35,7 +57,49 @@ export function DraftPanel({
     draft.status === 'uncertain' ? 'Send result uncertain' : ''
   ].filter(Boolean);
   const tone = draft.statusLabel.toLowerCase().replace(/[^a-z]+/g, '-');
-  const sent = draft.status === 'sent';
+  const canHoverSend = sendControls === 'ready' && draft.sendable;
+  const [choice, setChoice] = useState<{option: number; heading: string; replyEs: string} | null>(null);
+  const [phase, setPhase] = useState<'idle' | 'sending' | 'done'>('idle');
+  const [notice, setNotice] = useState('');
+  const idempotencyKey = useRef('');
+  const busy = useRef(false);
+  const holdSend = phase === 'sending' || notice === 'Sent' || notice === 'Sending' || notice === RESULT.UNKNOWN_OUTCOME;
+
+  async function confirmSend() {
+    if (!choice || busy.current) return;
+    busy.current = true;
+    if (!idempotencyKey.current) idempotencyKey.current = crypto.randomUUID();
+    setPhase('sending');
+    setNotice('Sending');
+    try {
+      const response = await fetch(`/api/drafts/${draft.id}/send`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'content-type': 'application/json',
+          'idempotency-key': idempotencyKey.current,
+          'x-inbox-request': '1'
+        },
+        body: JSON.stringify({option: choice.option})
+      });
+      const body = await response.json() as {code?: string};
+      const code = body.code || 'UNKNOWN_OUTCOME';
+      const text = RESULT[code] || RESULT.DRAFT_NOT_SENDABLE;
+      setNotice(code === 'SENT' ? 'Sent' : text);
+      setPhase('done');
+      setChoice(null);
+      if (code !== 'UNKNOWN_OUTCOME' && code !== 'SENT' && code !== 'IN_PROGRESS') {
+        idempotencyKey.current = '';
+        busy.current = false;
+      }
+      window.dispatchEvent(new CustomEvent('inbox-refresh'));
+    } catch {
+      setNotice(RESULT.UNKNOWN_OUTCOME);
+      setPhase('done');
+      setChoice(null);
+    }
+  }
+
   return (
     <article className={`draft tone-${tone}${draft.sendable ? ' sendable' : ''}${latest ? ' draft-latest' : ''}${open ? '' : ' collapsed'}`} aria-labelledby={`draft-${draft.id}-title`}>
       <h3 id={`draft-${draft.id}-title`}>
@@ -70,10 +134,14 @@ export function DraftPanel({
               {draft.options.map((option, index) => {
                 const number = index + 1;
                 const selected = draft.selectedOption === number;
+                const showSend = canHoverSend && !holdSend && Boolean(option.replyEs);
+                const classes = ['option'];
+                if (selected) classes.push('selected');
+                if (showSend) classes.push('sendable-option');
                 return (
-                  <li key={`${draft.id}-${number}`} className="option">
-                    <span className={`option-index style-${option.style}`}>{number}</span>
+                  <li key={`${draft.id}-${number}`} className={classes.join(' ')}>
                     <p className="option-label">
+                      <span className={`option-index style-${option.style}`}>{number}</span>
                       {optionHeading(option)}
                       {selected ? <span className="selected-flag">Selected</span> : null}
                     </p>
@@ -81,6 +149,20 @@ export function DraftPanel({
                       {option.replyEs ? <p className="option-es" lang="es">{option.replyEs}</p> : <p className="warning">Spanish text unavailable</p>}
                       {option.translationEn ? <p className="option-en" lang="en">{option.translationEn}</p> : <p className="warning">Translation unavailable</p>}
                     </div>
+                    {showSend ? (
+                      <button
+                        type="button"
+                        className="option-send"
+                        onClick={() => {
+                          idempotencyKey.current = crypto.randomUUID();
+                          setNotice('');
+                          setPhase('idle');
+                          setChoice({option: number, heading: optionHeading(option), replyEs: option.replyEs});
+                        }}
+                      >
+                        Send
+                      </button>
+                    ) : null}
                   </li>
                 );
               })}
@@ -90,12 +172,33 @@ export function DraftPanel({
           {draft.sendable ? (
             <p className="send-hint">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4z" fill="none" stroke="currentColor" strokeWidth="1.6"/><path d="M4 7l8 6 8-6" fill="none" stroke="currentColor" strokeWidth="1.6"/></svg>
-              To send, reply 1, 2, or 3 to the draft notification in WhatsApp.
+              {canHoverSend
+                ? 'Hover an option and choose Send, or reply 1, 2, or 3 to the draft notification in WhatsApp.'
+                : 'To send, reply 1, 2, or 3 to the draft notification in WhatsApp.'}
             </p>
           ) : null}
+          {draft.status === 'uncertain' ? <p className="warning">Send status unknown — do not retry</p> : null}
+          {notice ? <p className="warning" role="status">{notice}</p> : null}
           {facts.length ? <p className="draft-facts">{facts.join(' · ')}</p> : null}
         </div>
       </div>
+      {choice ? (
+        <div className="send-dialog" role="dialog" aria-modal="true" aria-labelledby={`send-${draft.id}-title`}>
+          <div className="send-card">
+            <h4 id={`send-${draft.id}-title`}>Confirm send</h4>
+            <p><span>To</span> {recipientName || 'Stored contact'}{recipientIdentity ? ` · ${recipientIdentity}` : ''}</p>
+            <p><span>Draft</span> #{draft.id}</p>
+            <p><span>Option</span> {choice.heading}</p>
+            <p className="send-preview" lang="es">{choice.replyEs}</p>
+            <div className="send-actions">
+              <button type="button" onClick={() => { if (phase !== 'sending') setChoice(null); }} disabled={phase === 'sending'}>Cancel</button>
+              <button type="button" className="confirm-send" onClick={() => { void confirmSend(); }} disabled={phase === 'sending'}>
+                {phase === 'sending' ? 'Sending' : 'Confirm Send'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </article>
   );
 }

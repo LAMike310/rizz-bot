@@ -78,6 +78,7 @@ class Store {
     this.ensureAvatarColumns();
     this.ensureVoiceColumns();
     this.ensureAliases(file, existed);
+    this.ensureSendAttempts();
     this.settleInterruptedSends();
     this.retireSyntheticNotifications();
   }
@@ -176,7 +177,29 @@ class Store {
     if (!names.has('transcription_model')) this.db.exec(`ALTER TABLE messages ADD COLUMN transcription_model TEXT`);
     if (!names.has('transcription_language')) this.db.exec(`ALTER TABLE messages ADD COLUMN transcription_language TEXT`);
   }
+  ensureSendAttempts() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS send_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        draft_id INTEGER NOT NULL REFERENCES drafts(id),
+        option INTEGER NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('whatsapp','dashboard')),
+        event_key TEXT NOT NULL UNIQUE,
+        recipient_chat_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('sending','sent','uncertain','released')),
+        whatsapp_id TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_send_attempts_draft ON send_attempts(draft_id, id);
+    `);
+  }
   settleInterruptedSends() {
+    const now = new Date().toISOString();
+    // A crash between the draft update and the attempt update must not look unsent.
+    this.db.prepare(`UPDATE send_attempts SET status='sent', updated_at=?
+      WHERE status='sending' AND draft_id IN (SELECT id FROM drafts WHERE status='sent')`).run(now);
+    this.db.prepare(`UPDATE send_attempts SET status='uncertain', updated_at=? WHERE status='sending'`).run(now);
     this.db.prepare(`UPDATE drafts SET status='uncertain' WHERE status='sending'`).run();
   }
   retireSyntheticNotifications() {
@@ -260,9 +283,22 @@ class Store {
     return rows.length === 1 ? rows[0] : null;
   }
   canSendTo(chatId) {
+    return this.resolveDraftRecipient(chatId).ok;
+  }
+  resolveDraftRecipient(chatId) {
     const contact = this.contact(chatId);
-    if (!contact || contact.enabled !== 1 || contact.archived) return false;
-    return this.aliasesFor(chatId).includes(chatId);
+    if (!contact || contact.enabled !== 1 || contact.archived) return {ok: false, code: 'paused'};
+    const mapped = this.db.prepare('SELECT chat_id FROM contact_aliases WHERE alias=?').get(chatId);
+    if (!mapped || mapped.chat_id !== chatId) return {ok: false, code: 'identity-mismatch'};
+    const aliases = this.aliasesFor(chatId);
+    if (!aliases.includes(chatId)) return {ok: false, code: 'identity-mismatch'};
+    for (const alias of aliases) {
+      const owner = this.db.prepare('SELECT chat_id FROM contact_aliases WHERE alias=?').get(alias);
+      if (!owner || owner.chat_id !== chatId) return {ok: false, code: 'identity-mismatch'};
+    }
+    const phones = this.db.prepare('SELECT chat_id FROM contacts WHERE phone=?').all(contact.phone);
+    if (phones.length !== 1 || phones[0].chat_id !== chatId) return {ok: false, code: 'identity-mismatch'};
+    return {ok: true, chatId, contact};
   }
   invalidateActiveDrafts(chatId) {
     return this.db.prepare(`UPDATE drafts SET status='stale' WHERE chat_id=? AND status IN ('pending','active')`).run(chatId).changes;
@@ -459,13 +495,33 @@ class Store {
         SELECT 1 FROM contacts c WHERE c.chat_id=drafts.chat_id
         AND c.enabled=1 AND c.revision=drafts.revision)`).run(notificationWhatsappId, expiresAt || null, id).changes === 1;
   }
-  claimApproval({notificationWhatsappId, approvalWhatsappId, option, now, dryRun = false}) {
+  claimApproval({notificationWhatsappId, approvalWhatsappId, option, now, dryRun = false, source = 'whatsapp', draftId = null}) {
     return this.transaction(() => {
+      if (!approvalWhatsappId) return {ok: false, code: 'invalid'};
+      if (source !== 'whatsapp' && source !== 'dashboard') return {ok: false, code: 'invalid'};
       const duplicate = this.db.prepare('SELECT * FROM drafts WHERE approval_whatsapp_id=?').get(approvalWhatsappId);
-      if (duplicate) return {ok: false, code: 'duplicate-approval', draft: duplicate};
-      if (!this.approvableNotificationId(notificationWhatsappId)) return {ok: false, code: 'unknown-notification'};
-      const draft = this.draftByNotification(notificationWhatsappId);
-      if (!draft) return {ok: false, code: 'unknown-notification'};
+      if (duplicate) {
+        if (draftId != null && Number(duplicate.id) !== Number(draftId)) {
+          return {ok: false, code: 'idempotency-conflict', draft: this.draft(draftId)};
+        }
+        return {ok: false, code: 'duplicate-approval', draft: duplicate};
+      }
+      const priorAttempt = this.db.prepare('SELECT draft_id FROM send_attempts WHERE event_key=?').get(approvalWhatsappId);
+      if (priorAttempt) {
+        if (draftId != null && Number(priorAttempt.draft_id) !== Number(draftId)) {
+          return {ok: false, code: 'idempotency-conflict', draft: this.draft(draftId)};
+        }
+        return {ok: false, code: 'duplicate-approval', draft: this.draft(priorAttempt.draft_id)};
+      }
+      let draft = null;
+      if (draftId != null) {
+        draft = this.draft(draftId);
+        if (!draft) return {ok: false, code: 'unknown-notification'};
+      } else {
+        if (!this.approvableNotificationId(notificationWhatsappId)) return {ok: false, code: 'unknown-notification'};
+        draft = this.draftByNotification(notificationWhatsappId);
+        if (!draft) return {ok: false, code: 'unknown-notification'};
+      }
       if (draft.status !== 'active') return {ok: false, code: draft.status, draft};
       const contact = this.contact(draft.chat_id);
       if (!contact?.enabled || contact.archived) {
@@ -476,29 +532,67 @@ class Store {
         this.db.prepare(`UPDATE drafts SET status='stale' WHERE id=? AND status='active'`).run(draft.id);
         return {ok: false, code: 'stale', draft: this.draft(draft.id)};
       }
+      const recipient = this.resolveDraftRecipient(draft.chat_id);
+      if (!recipient.ok) return {ok: false, code: recipient.code === 'paused' ? 'paused' : 'identity-mismatch', draft};
       if (draft.expires_at && draft.expires_at <= now) {
         this.db.prepare(`UPDATE drafts SET status='expired' WHERE id=? AND status='active'`).run(draft.id);
         return {ok: false, code: 'expired', draft: this.draft(draft.id)};
       }
-      const options = JSON.parse(draft.options_json || '[]');
+      let options = [];
+      try { options = JSON.parse(draft.options_json || '[]'); }
+      catch { return {ok: false, code: 'missing-option', draft}; }
+      if (!Array.isArray(options)) return {ok: false, code: 'missing-option', draft};
       const selected = options[option - 1];
       if (!selected?.reply_es) return {ok: false, code: 'missing-option', draft};
       if (dryRun) return {ok: true, dryRun: true, draft, text: selected.reply_es, chatId: draft.chat_id};
       const claimed = this.db.prepare(`UPDATE drafts SET status='sending', selected_option=?, approval_whatsapp_id=?, approved_at=?
         WHERE id=? AND status='active'`).run(option, approvalWhatsappId, now, draft.id);
       if (!claimed.changes) return {ok: false, code: 'lost-race', draft: this.draft(draft.id)};
-      return {ok: true, draft: this.draft(draft.id), text: selected.reply_es, chatId: draft.chat_id};
+      const attempt = this.db.prepare(`INSERT INTO send_attempts(
+        draft_id, option, source, event_key, recipient_chat_id, status, created_at, updated_at)
+        VALUES(?,?,?,?,?,'sending',?,?)`).run(draft.id, option, source, approvalWhatsappId, draft.chat_id, now, now);
+      return {
+        ok: true,
+        draft: this.draft(draft.id),
+        text: selected.reply_es,
+        chatId: draft.chat_id,
+        attemptId: Number(attempt.lastInsertRowid)
+      };
     });
   }
+  attemptByEvent(eventKey) {
+    return this.db.prepare('SELECT * FROM send_attempts WHERE event_key=?').get(eventKey) || null;
+  }
   markSent(id, sentWhatsappId, now) {
-    return this.db.prepare(`UPDATE drafts SET status='sent', sent_whatsapp_id=?, sent_at=? WHERE id=? AND status='sending'`)
-      .run(sentWhatsappId || null, now, id).changes === 1;
+    return this.transaction(() => {
+      const saved = this.db.prepare(`UPDATE drafts SET status='sent', sent_whatsapp_id=?, sent_at=? WHERE id=? AND status='sending'`)
+        .run(sentWhatsappId || null, now, id).changes === 1;
+      if (saved) {
+        this.db.prepare(`UPDATE send_attempts SET status='sent', whatsapp_id=?, updated_at=? WHERE draft_id=? AND status='sending'`)
+          .run(sentWhatsappId || null, now, id);
+      }
+      return saved;
+    });
   }
   markUncertain(id) {
-    return this.db.prepare(`UPDATE drafts SET status='uncertain' WHERE id=? AND status='sending'`).run(id).changes === 1;
+    const now = new Date().toISOString();
+    return this.transaction(() => {
+      const saved = this.db.prepare(`UPDATE drafts SET status='uncertain' WHERE id=? AND status='sending'`).run(id).changes === 1;
+      if (saved) {
+        this.db.prepare(`UPDATE send_attempts SET status='uncertain', updated_at=? WHERE draft_id=? AND status='sending'`).run(now, id);
+      }
+      return saved;
+    });
   }
   abortUnsent(id) {
-    return this.db.prepare(`UPDATE drafts SET status='stale' WHERE id=? AND status='sending'`).run(id).changes === 1;
+    const now = new Date().toISOString();
+    return this.transaction(() => {
+      const saved = this.db.prepare(`UPDATE drafts SET status='stale' WHERE id=? AND status='sending'`).run(id).changes === 1;
+      if (saved) {
+        this.db.prepare(`UPDATE send_attempts SET status='released', updated_at=? WHERE draft_id=? AND status='sending'`).run(now, id);
+      }
+      return saved;
+    });
   }
   countMessages(chatId) {
     return this.db.prepare('SELECT COUNT(*) AS n FROM messages WHERE chat_id=?').get(chatId).n;

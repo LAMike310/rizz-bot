@@ -64,7 +64,10 @@ function loadConfig(root = process.cwd()) {
     incomingVoiceEnabled: bool('INCOMING_VOICE_ENABLED', false),
     incomingVoiceLanguage: language('INCOMING_VOICE_LANGUAGE', 'es'),
     incomingVoiceMaxSeconds: integer('INCOMING_VOICE_MAX_SECONDS', 120, 1, 600),
-    incomingVoiceMaxBytes: integer('INCOMING_VOICE_MAX_BYTES', 8000000, 1, 25000000)
+    incomingVoiceMaxBytes: integer('INCOMING_VOICE_MAX_BYTES', 8000000, 1, 25000000),
+    dashboardSendEnabled: bool('DASHBOARD_SEND_ENABLED', false),
+    dashboardAgentPort: integer('DASHBOARD_AGENT_PORT', 39217, 1, 65535),
+    dashboardAgentToken: process.env.DASHBOARD_AGENT_TOKEN || ''
   });
 }
 function logger(level = 'info') {

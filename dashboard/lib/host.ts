@@ -20,3 +20,9 @@ export function isTailnetHost(host: string | null): boolean {
 export function isAllowedInboxHost(host: string | null): boolean {
   return isLocalHost(host) || isTailnetHost(host);
 }
+
+export function sameSiteHost(left: string | null, right: string | null): boolean {
+  const a = bareHost(left);
+  const b = bareHost(right);
+  return Boolean(a && b && a === b);
+}

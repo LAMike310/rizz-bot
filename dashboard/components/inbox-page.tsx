@@ -1,3 +1,4 @@
+import {cookies} from 'next/headers';
 import {connection} from 'next/server';
 import {notFound, redirect} from 'next/navigation';
 import {LiveInbox} from './live-inbox';
@@ -5,6 +6,7 @@ import {threadHref} from '../lib/links';
 import {isContactKey} from '../lib/keys';
 import {CONTACT_MAX, CONTACT_PAGE, MESSAGE_MAX, MESSAGE_PAGE, firstParam, pageLimit} from '../lib/limits';
 import {InboxError} from '../lib/open-db';
+import {sendControlMode} from '../lib/owner-auth';
 import {loadInbox, loadThread, resolveChatId} from '../lib/queries';
 import {database} from '../lib/session';
 import {inboxStamp} from '../lib/stamp';
@@ -17,6 +19,8 @@ export async function InboxPage({
   searchParams: Record<string, string | string[] | undefined>;
 }) {
   await connection();
+  const jar = await cookies();
+  const sendControls = sendControlMode(jar.get('inbox_owner')?.value);
   if (contactKey && !isContactKey(contactKey)) notFound();
   const contactLimit = pageLimit(firstParam(searchParams.contactLimit), CONTACT_PAGE, CONTACT_MAX);
   const messageLimit = pageLimit(firstParam(searchParams.messageLimit), MESSAGE_PAGE, MESSAGE_MAX);
@@ -56,6 +60,7 @@ export async function InboxPage({
             messageLimit,
             thread
           }}
+          sendControls={sendControls}
         />
       );
     }

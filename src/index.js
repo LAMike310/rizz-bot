@@ -8,6 +8,7 @@ const {createWhatsAppClient} = require('./whatsapp');
 const {loadConfig, logger: createLogger} = require('./config');
 const {createVoiceSanity, downloadVoiceMedia} = require('./voice-sanity');
 const {refreshContactAvatars} = require('./profile-pic');
+const {startApprovalBridge} = require('./approval-bridge');
 
 async function main() {
   const config = loadConfig();
@@ -29,6 +30,7 @@ async function main() {
   });
   let agent = null;
   let drafts = null;
+  let bridge = null;
   let closing = false;
   let waReady = false;
   let avatarChain = Promise.resolve();
@@ -39,6 +41,22 @@ async function main() {
       .catch((error) => log.warn(`Profile photo refresh stopped: ${error.message}`));
   }
   const voiceSanity = createVoiceSanity({db, config, log, ai, getDrafts: () => drafts});
+  if (config.dashboardSendEnabled) {
+    if (!config.dashboardAgentToken || config.dashboardAgentToken.length < 16) {
+      log.error('DASHBOARD_SEND_ENABLED is true but DASHBOARD_AGENT_TOKEN is missing or shorter than 16 characters. The send bridge was not started.');
+    } else {
+      bridge = startApprovalBridge({
+        token: config.dashboardAgentToken,
+        port: config.dashboardAgentPort,
+        log,
+        approve: (input) => {
+          if (!waReady || !agent) return {ok: false, code: 'whatsapp-unavailable'};
+          return agent.approveAndSendDraft({...input, source: 'dashboard', ready: true});
+        }
+      });
+      log.info(`Dashboard send bridge listening on 127.0.0.1:${config.dashboardAgentPort}. It is not exposed through Tailscale.`);
+    }
+  }
   const client = createWhatsAppClient(config, log, {
     onLoadContacts: () => db.enabledContacts().map((row) => ({
       chatId: row.chat_id,
@@ -104,6 +122,7 @@ async function main() {
     closing = true;
     log.info(`${signal}: stopping local agent`);
     agent?.stop();
+    if (bridge) await new Promise((resolve) => bridge.close(() => resolve()));
     try { await Promise.race([client.destroy(), new Promise(resolve => setTimeout(resolve, 7000))]); }
     catch (error) { log.warn(`WhatsApp shutdown: ${error.message}`); }
     // An OpenRouter request may have already started. Allow it to settle

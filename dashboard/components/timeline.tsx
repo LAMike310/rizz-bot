@@ -22,7 +22,9 @@ export function Timeline({
   events,
   hasEarlier,
   olderHref,
-  atCap
+  atCap,
+  sendControls = 'off',
+  recipientIdentity = ''
 }: {
   contactKey: string;
   contactName: string;
@@ -31,6 +33,8 @@ export function Timeline({
   hasEarlier: boolean;
   olderHref: string | null;
   atCap: boolean;
+  sendControls?: 'off' | 'unconfigured' | 'locked' | 'ready';
+  recipientIdentity?: string;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const contactSeen = useRef(contactKey);
@@ -136,6 +140,9 @@ export function Timeline({
                           latest={draft.id === latestDraftId}
                           open={expanded(draft.id, draft.sendable)}
                           onToggle={(id, open) => setOverrides((current) => ({...current, [id]: open}))}
+                          sendControls={sendControls}
+                          recipientName={contactName}
+                          recipientIdentity={recipientIdentity}
                         />
                       ))}
                     </div>
@@ -149,6 +156,9 @@ export function Timeline({
                   latest={row.event.id === latestDraftId}
                   open={expanded(row.event.id, row.event.sendable)}
                   onToggle={(id, open) => setOverrides((current) => ({...current, [id]: open}))}
+                  sendControls={sendControls}
+                  recipientName={contactName}
+                  recipientIdentity={recipientIdentity}
                 />
               )}
             </li>

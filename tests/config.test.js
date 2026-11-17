@@ -44,5 +44,7 @@ test('Approved sending stays off unless both flags explicitly allow it',()=>{
     assert.equal(loadConfig().incomingVoiceLanguage,'es');
     assert.equal(loadConfig().incomingVoiceMaxSeconds,120);
     assert.equal(loadConfig().incomingVoiceMaxBytes,8000000);
+    delete process.env.DASHBOARD_SEND_ENABLED;
+    assert.equal(loadConfig().dashboardSendEnabled,false);
   }finally{process.env=original;}
 });

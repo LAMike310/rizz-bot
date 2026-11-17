@@ -64,6 +64,8 @@ VOICE_SANITY_TEST_ENABLED=false
 
 Incoming voice notes from the approved contact stay off unless `INCOMING_VOICE_ENABLED=true`. `INCOMING_VOICE_LANGUAGE` defaults to `es` (`auto` omits the language hint). Limits: `INCOMING_VOICE_MAX_SECONDS` (120) and `INCOMING_VOICE_MAX_BYTES` (8000000). The same Whisper model and API key transcribe the audio. Audio is sent to OpenRouter and is not saved on disk. A failed transcript is marked in history and does not produce a draft for that burst.
 
+Desktop send from the inbox stays off unless `DASHBOARD_SEND_ENABLED=true`. It also needs `DASHBOARD_AGENT_TOKEN` (16+ characters) on this process and the same token, `DASHBOARD_OWNER_SECRET`, and `DASHBOARD_SESSION_SECRET` in `dashboard/.env.local`. The optional port is `DASHBOARD_AGENT_PORT` (default `39217`). The agent listens on `127.0.0.1` only. See `dashboard/README.md` before turning the flag on. Quoted WhatsApp replies remain the other approval path, and both still require `DRAFT_ONLY=false` and `APPROVED_SEND_ENABLED=true`.
+
 Use **digits only** for `TEST_CONTACT_NUMBER` (including the country code). Do **not** put the owner's primary WhatsApp number there. Give OpenRouter a small spend cap and choose a model available to your key. `openrouter/free` is a model router; outputs, availability and limits may change. Use `OPENROUTER_OUTPUT_MODE=prompt` by default for broad compatibility, or `json_schema` for a chosen model whose endpoint supports structured outputs. Invalid output fails closed.
 
 No `.env`, `.wwebjs_auth`, or database file is included in this ZIP; `.gitignore` excludes them.

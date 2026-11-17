@@ -61,6 +61,8 @@ export type Thread = {
   messageLimit: number;
 };
 
+export type SendControls = 'off' | 'unconfigured' | 'locked' | 'ready';
+
 export type InboxPayload = {
   revision: string;
   contacts: InboxContact[];
